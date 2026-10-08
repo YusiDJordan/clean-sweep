@@ -4,7 +4,7 @@ import { G, clamp, lerp, smooth, rand, pick, angDiff, dampAngle, damp, resolveCi
 import { Rig, RIG } from './rig.js';
 import { skinCharacter, KARIM_DIMS } from './skin.js';
 import { MixamoBody, mixamoDims } from './mixamo.js';
-import { prepareRobber, attachRobberBody, robberDims } from './robber.js';
+import { prepareRobber, attachRobberBody, robberDims, outlineMat } from './robber.js';
 import { solveIK } from './rig.js';
 import { RobberAnim, robberAnimsReady, clipStride, placeRifle } from './robanim.js';
 import { attachTools, setTool, toolHead, flattenHead, nearCart, TOOL_ORDER, TOOL_LABEL, pushBarrow, barrowGrips, barrowSlot, barrowFront, loadRifle, updateBarrowHops } from './tools.js';
@@ -89,7 +89,7 @@ const COMBO_SEQ = ['swingR', 'swingL', 'jab', 'swingR', 'upper', 'swingL', 'slam
 // through the roll, until he's back on his feet (seconds of clip), a little quicker than authored
 const DODGE = { start: 0.9, span: 0.9, rate: 1.6 }; // straight into the dive
 // tint an object's materials gold (its own copies, so other robbers / rifles keep theirs)
-function goldTint(obj, a, good = true) {
+export function goldTint(obj, a, good = true) {
   const ud = obj.userData;
   if (!ud.goldMats) {
     if (a <= 0.01) return;
@@ -164,7 +164,7 @@ export class Player {
 
   // ---------- input-driven actions ----------
   moveInput() {
-    if (G.leaving) { // leaving: walk into the elevator by himself
+    if (G.leaving || G.autoWalk) { // leaving: walk into the elevator (or up the stairs) by himself
       if (!G.autoWalk) return V();
       const d = V(G.autoWalk.x - this.pos.x, 0, G.autoWalk.z - this.pos.z); return d.lengthSq() > 0.01 ? d.normalize() : V();
     }
@@ -272,6 +272,7 @@ export class Player {
     G.resetCombo(); G.shake = Math.max(G.shake, 0.5); G.dmgFlash = 1;
     SFX.play('hurt');
     if (this.state !== 'special') { this.state = 'hurt'; this.t = 0; this.hurtDir = dir.clone(); }
+    if (this.hp <= 0 && G.noDeath) this.hp = 1; // (the tutorial: he can't lose)
     if (this.hp <= 0) { this.hp = 0; this.state = 'dead'; this.t = 0; this.deathClip = Math.random() < 0.5 ? 'Deathanim' : 'Deathanim2'; if (this.body) this.dropMop(); G.onPlayerDead(); }
     return true;
   }
@@ -601,6 +602,9 @@ export class Player {
     const on = this.retT && !this.retT.ko && this.retHold > 0;
     this.retA = clamp((this.retA || 0) + (on ? dt * 9 : -dt * 5), 0, 1);
     reticle.visible = this.retA > 0.01 && !!this.retT;
+    // gold outline on the robber he's going for
+    for (const e of G.enemies) if (e.outline) e.outline.visible = reticle.visible && e === this.retT && !e.ko;
+    const om = outlineMat(); om.opacity = 0.95 * this.retA; om.userData.thick.value = 0.028 + Math.sin(G.time * 9) * 0.005;
     if (!reticle.visible) return;
     const e = this.retT, s = (e.heavy ? 1.15 : 0.95) * (1 + (1 - this.retA) * 0.5);
     reticle.position.set(e.pos.x, 0.025, e.pos.z); reticle.scale.setScalar(s);
@@ -964,7 +968,7 @@ export class Enemy {
     const toP = _v1.copy(P.pos).sub(this.pos).setY(0); const dist = toP.length(); const dirP = toP.clone().normalize();
 
     // detection
-    if (!this.aggro && !this.ko && P.state !== 'dead') {
+    if (!this.aggro && !this.ko && P.state !== 'dead' && !this.tutHold) { // (tutHold: the tutorial says when he comes in)
       const range = this.idleMode === 'loot' ? 5.0 : 7.0;
       if (dist < range && this.hasLOS(P.pos)) { this.alert(); G.alertGroup(this.group); }
     }
@@ -998,10 +1002,14 @@ export class Enemy {
         setW([-0.14, 1.15, 0.28], [0.15, -0.35, 0.92]); pose.ln = 0.08; pose.tw = 0;
         this.cool -= dt; this.strafeT -= dt;
         if (this.strafeT <= 0) { this.strafeT = rand(1.2, 3); this.strafeSign *= -1; }
-        const ideal = this.heavy ? 3.5 : 5.5;
+        const ideal = this.tutIdeal ?? (this.heavy ? 3.5 : 5.5);
         const radial = dist > ideal + 1.5 ? 1 : dist < ideal - 1.8 ? -0.6 : 0;
         const tang = V(-dirP.z, 0, dirP.x).multiplyScalar(this.strafeSign * 0.8);
         want.copy(dirP).multiplyScalar(radial).add(tang).normalize().multiplyScalar(dist > 10 ? 3.6 : 1.8);
+        if (this.tutWalk) { // (the tutorial walks him in through the fire doors)
+          const d = V(this.tutWalk.x - this.pos.x, 0, this.tutWalk.z - this.pos.z);
+          if (d.length() < 0.4) this.tutWalk = null; else { want.copy(d).setLength(2.6); faceTo = want.clone(); }
+        }
         // separation
         for (const o of G.enemies) {
           if (o === this || o.ko) continue;
@@ -1009,7 +1017,7 @@ export class Enemy {
           if (d < 2.0 && d > 0.01) { want.x += dx / d * (2 - d) * 2; want.z += dz / d * (2 - d) * 2; }
         }
         // request attack token from the director
-        if (this.cool <= 0 && G.requestAttack(this)) {
+        if (this.cool <= 0 && !this.tutNoAttack && G.requestAttack(this)) {
           if (dist < 2.6) { this.state = 'melee'; this.t = 0; SFX.play('alert'); }
           else if (dist < 13 && this.hasLOS(P.pos)) { this.state = 'aim'; this.t = 0; this.aimDir.copy(dirP); this.burstDodged = false; SFX.play('aim'); }
           else G.attackers.delete(this);
@@ -1075,7 +1083,7 @@ export class Enemy {
         legFK = { t: [-0.3, 0.1], k: [0.6, 0.2] };
         setW([0, 1.15, 0.2], [1, 0.1, 0]);
         this.ring.visible = true; this.ring.position.set(this.pos.x, 0.03, this.pos.z); this.ring.scale.setScalar(1 + Math.sin(G.time * 10) * 0.08);
-        if (this.t > 2.5) { this.state = 'getup'; this.t = 0; this.ring.visible = false; }
+        if (this.t > (this.tutDownT || 2.5)) { this.state = 'getup'; this.t = 0; this.ring.visible = false; }
         break;
       }
       case 'getup': {
@@ -1207,7 +1215,18 @@ export class Enemy {
     bloodPool(h.x * 0.7 + c.x * 0.3, h.z * 0.7 + c.z * 0.3, (0.45 + Math.random() * 0.3) * Math.sqrt(this.size), 1.8);
   }
 
-  endAttack() { this.releaseToken(); this.state = 'combat'; this.t = 0; this.cool = this.heavy ? rand(1.2, 2.2) : rand(1.8, 3.6); }
+  endAttack() {
+    if (this.state === 'fire') this.lastBurst = { dodged: !!this.burstDodged, hurt: !!this.burstHurt, t: G.time };
+    this.releaseToken(); this.state = 'combat'; this.t = 0; this.cool = this.heavy ? rand(1.2, 2.2) : rand(1.8, 3.6);
+  }
+  // the tutorial asks for a shot (to teach the dodge roll): raise the rifle and aim at Karim now
+  forceAim() {
+    if (this.ko || this.down || this.state === 'aim' || this.state === 'fire') return false;
+    const d = G.player.pos.clone().sub(this.pos).setY(0); if (d.lengthSq() < 1e-4) d.set(0, 0, 1);
+    G.attackers.add(this); this.state = 'aim'; this.t = 0; this.aimDir.copy(d.normalize());
+    this.burstDodged = false; this.burstHurt = false; this.lockBeep = false; SFX.play('aim');
+    return true;
+  }
 
   // knocked-back bodies smash into furniture
   bodyCollide(speed, h) {

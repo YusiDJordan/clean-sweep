@@ -38,6 +38,7 @@ export function prepareRobber(gltf, RigClass) {
     m.onBeforeCompile = sh => { sh.fragmentShader = sh.fragmentShader.replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\nroughnessFactor = max(roughnessFactor, ' + minR.toFixed(2) + ');'); };
     m.customProgramCacheKey = () => 'robber' + minR; return m; };
   const mat = tune(bodyM.material, 0), matHeavy = tune(bodyM.material, 0); matHeavy.color = new THREE.Color(0x8c8c8c);
+  for (const m of [mat, matHeavy]) Object.assign(m, { stencilWrite: true, stencilRef: 1, stencilFunc: THREE.AlwaysStencilFunc, stencilZPass: THREE.ReplaceStencilOp }); // (marks robber pixels so the outline only shows outside them)
   const rmat = tune(rifleM.material, 0.5, 0.35);
   // rig dimensions measured from the model
   const avg = (a, b) => (a + b) / 2, d = (a, b) => a.distanceTo(b);
@@ -107,4 +108,32 @@ export function attachRobberBody(enemy) {
   rig.weapon.userData.muzzle = R.muzzle.clone(); rig.weapon.userData.laser = R.laser.clone(); rig.weapon.userData.len = R.len;
   rig.gripLocal = [R.gripL.clone(), new THREE.Vector3()];
   enemy.skin = mesh;
+  // a gold outline (an inflated back-face copy of the body, sharing its skeleton): shown on the robber Karim is going for
+  const ol = new THREE.SkinnedMesh(outlineGeo(R.geo), outlineMat()); ol.frustumCulled = false; ol.visible = false; ol.renderOrder = -1;
+  Object.assign(ol.userData, { noAO: true, noReflect: true, noProbe: true });
+  G.scene.add(ol); ol.bind(mesh.skeleton, mesh.bindMatrix);
+  enemy.outline = ol;
+}
+let OL = null, OLG = null;
+// the outline pushes each vertex out along a normal averaged over every copy of that point, so it doesn't split at seams
+function outlineGeo(geo) {
+  if (OLG) return OLG;
+  const g = geo.clone(), pos = g.attributes.position, nor = g.attributes.normal, n = pos.count, acc = new Map(), key = i => `${Math.round(pos.getX(i) * 1e4)},${Math.round(pos.getY(i) * 1e4)},${Math.round(pos.getZ(i) * 1e4)}`;
+  for (let i = 0; i < n; i++) { const k = key(i); const a = acc.get(k) || [0, 0, 0]; a[0] += nor.getX(i); a[1] += nor.getY(i); a[2] += nor.getZ(i); acc.set(k, a); }
+  const sn = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) { const a = acc.get(key(i)), l = Math.hypot(a[0], a[1], a[2]) || 1; sn[i * 3] = a[0] / l; sn[i * 3 + 1] = a[1] / l; sn[i * 3 + 2] = a[2] / l; }
+  g.setAttribute('smoothNormal', new THREE.BufferAttribute(sn, 3));
+  return (OLG = g);
+}
+export function outlineMat() {
+  if (OL) return OL;
+  OL = new THREE.MeshBasicMaterial({ color: 0xffc43c, side: THREE.BackSide, transparent: true, opacity: 0, toneMapped: false, depthWrite: false,
+    stencilWrite: true, stencilRef: 1, stencilFunc: THREE.NotEqualStencilFunc, stencilFail: THREE.KeepStencilOp, stencilZFail: THREE.KeepStencilOp, stencilZPass: THREE.KeepStencilOp });
+  OL.userData.thick = { value: 0.022 };
+  OL.onBeforeCompile = sh => {
+    sh.uniforms.uThick = OL.userData.thick;
+    sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nuniform float uThick; attribute vec3 smoothNormal;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\ntransformed += smoothNormal * uThick;');
+  };
+  return OL;
 }

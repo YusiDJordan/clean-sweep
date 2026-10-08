@@ -4,7 +4,7 @@ import * as THREE from 'three';
 import { clone as skClone } from 'three/addons/utils/SkeletonUtils.js';
 import { L } from './level.js';
 import { KARIM_SCALE } from './mixamo.js';
-import { buildDisplayMop } from './tools.js';
+import { buildDisplayMop, addMopPole } from './tools.js';
 
 export const T = { scene: null, cam: null, ready: false, a: 0.55 };
 
@@ -38,6 +38,7 @@ export function initTitle(tex) {
   const blob = new THREE.Mesh(new THREE.PlaneGeometry(1.5, 1.5), new THREE.MeshBasicMaterial({ map: blobTex(), color: 0x000000, transparent: true, opacity: 0.32, depthWrite: false }));
   blob.rotation.x = -Math.PI / 2; blob.position.y = 0.002; scene.add(blob);
 
+  if (L.titlePose) { posedKarim(scene, kg, tex, L.titlePose); T.ready = true; updateTitle(0); return; }
   // Karim
   const k = skClone(kg.scene), holder = new THREE.Group();
   holder.scale.setScalar(KARIM_SCALE); holder.add(k); scene.add(holder);
@@ -69,9 +70,49 @@ export function initTitle(tex) {
   updateTitle(0);
 }
 
+// Karim frozen mid mop-strike (a frame captured from the game: every bone, the mop, and its flying strands)
+function posedKarim(scene, kg, tex, pose) {
+  const root = new THREE.Group(); scene.add(root); T.root = root;
+  const k = skClone(kg.scene);
+  new THREE.Matrix4().fromArray(pose.sceneRel).decompose(k.position, k.quaternion, k.scale);
+  root.add(k);
+  k.traverse(o => {
+    if (o.isSkinnedMesh) { o.material = new THREE.MeshStandardMaterial({ map: tex, roughness: 0.72, metalness: 0, envMapIntensity: 0.6 }); o.castShadow = true; o.receiveShadow = true; o.frustumCulled = false; }
+    if (o.isBone) { const b = pose.bones[o.name.replace(/^mixamorig:?/, '')]; if (b) { o.quaternion.fromArray(b.q); o.position.fromArray(b.p); } }
+  });
+  const mop = new THREE.Group(); addMopPole(mop, 1.16);
+  const seg = new THREE.CylinderGeometry(0.0095, 0.0115, 1, 7, 1); seg.translate(0, 0.5, 0);
+  const im = new THREE.InstancedMesh(seg, new THREE.MeshStandardMaterial({ color: 0xebe5d4, roughness: 0.88 }), pose.count), m4 = new THREE.Matrix4();
+  // fan the strands out, the way a mop head bursts open at the fastest part of a swing
+  const SEG = 6, n = pose.count / SEG, up = new THREE.Vector3(0, 1, 0), P = new THREE.Vector3(), Q = new THREE.Quaternion(), S = new THREE.Vector3();
+  for (let i = 0; i < n; i++) {
+    const segs = [];
+    for (let j = 0; j < SEG; j++) { m4.fromArray(pose.strands, (i * SEG + j) * 16).decompose(P, Q, S); segs.push({ p: P.clone(), d: up.clone().applyQuaternion(Q), l: S.y }); }
+    const s0 = segs[0].p, last = segs[SEG - 1], end = last.p.clone().addScaledVector(last.d, last.l);
+    const D = end.clone().sub(s0), Lt = D.length(); D.normalize();
+    const radial = new THREE.Vector3(s0.x, 0, s0.z); if (radial.lengthSq() < 1e-6) radial.set(Math.cos(i * 2.4), 0, Math.sin(i * 2.4)); radial.normalize();
+    const out = D.clone().addScaledVector(radial, 0.7 + ((i * 7) % 5) * 0.09).normalize(), len = Lt * (0.95 + ((i * 5) % 4) * 0.09) / SEG;
+    const p = s0.clone();
+    for (let j = 0; j < SEG; j++) {
+      const d = out.clone().lerp(D, j / (SEG + 0.5)).normalize(); // (the tips curl back the way the swing came from)
+      im.setMatrixAt(i * SEG + j, m4.compose(p, Q.setFromUnitVectors(up, d), S.set(1, len, 1)));
+      p.addScaledVector(d, len);
+    }
+  }
+  im.frustumCulled = false; mop.add(im);
+  new THREE.Matrix4().fromArray(pose.weaponRel).decompose(mop.position, mop.quaternion, mop.scale);
+  mop.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } }); root.add(mop);
+  // stand him in the middle of the stage (hips over the centre)
+  root.updateMatrixWorld(true);
+  let hips = null; k.traverse(o => { if (o.isBone && /Hips$/.test(o.name)) hips = o; });
+  if (hips) { const h = hips.getWorldPosition(new THREE.Vector3()); root.position.x -= h.x; root.position.z -= h.z; }
+  T.posed = true;
+}
+
 const _q = new THREE.Quaternion(), _p = new THREE.Vector3(), _d = new THREE.Vector3(), _flip = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI);
 export function updateTitle(dt) {
   if (!T.ready) return;
+  if (T.posed) { orbit(dt); return; }
   if (T.applied) for (const [b, q] of T.tweak) b.quaternion.multiply(_q.copy(q).invert());
   T.mixer.update(dt);
   for (const [b, q] of T.tweak) b.quaternion.multiply(q);
@@ -86,8 +127,11 @@ export function updateTitle(dt) {
     T.mop.position.copy(_p); T.mop.quaternion.copy(_q).multiply(_flip);
     T.mop.updateMatrixWorld(true); T.strands.position.copy(T.mop.localToWorld(_d.set(0, 0.6, 0)));
   }
+  orbit(dt);
+}
+function orbit(dt) {
   // the camera circles him slowly; on wide screens he stands right of centre, clear of the menu
-  T.a += dt * (Math.PI * 2 / 48);
+  T.a += dt * (Math.PI * 2 / 80);
   const r = 5.1, cam = T.cam;
   cam.position.set(Math.sin(T.a) * r, 1.25, Math.cos(T.a) * r);
   cam.lookAt(0, 0.98, 0);

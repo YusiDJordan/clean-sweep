@@ -70,7 +70,7 @@ export const HUD = {
       c.beginPath(); pts.forEach((p, i) => i ? c.lineTo(p[0], p[1]) : c.moveTo(p[0], p[1])); c.closePath(); c.fill();
     }
     for (const e of G.enemies) {
-      if (e.gone || e.loaded) continue; // vacuumed up / in the wheelbarrow
+      if (e.gone || e.loaded || e.hidden) continue; // vacuumed up / in the wheelbarrow / not on stage yet
       const [x, y] = m(e.pos.x, e.pos.z);
       if (e.ko) { c.strokeStyle = 'rgba(160,160,160,0.6)'; c.lineWidth = 2; c.beginPath(); c.moveTo(x - 3, y - 3); c.lineTo(x + 3, y + 3); c.moveTo(x + 3, y - 3); c.lineTo(x - 3, y + 3); c.stroke(); continue; }
       const a = e.yaw; const fx = Math.sin(a), fz = Math.cos(a);

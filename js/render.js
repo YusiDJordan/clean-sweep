@@ -87,7 +87,7 @@ function buildComposer() {
   const size = renderer.getDrawingBufferSize(new THREE.Vector2());
   const maxS = renderer.capabilities.maxSamples || 4;
   const samples = GFX.aa === 'msaa8' ? Math.min(8, maxS) : GFX.aa === 'msaa4' ? Math.min(4, maxS) : 0;
-  const rt = new THREE.WebGLRenderTarget(size.x, size.y, { type: THREE.HalfFloatType, samples });
+  const rt = new THREE.WebGLRenderTarget(size.x, size.y, { type: THREE.HalfFloatType, samples, stencilBuffer: true }); // (stencil: the target outline)
   const composer = new EffectComposer(renderer, rt);
   R.renderPass = new RenderPass(G.scene, G.camera);
   composer.addPass(R.renderPass);
@@ -262,9 +262,11 @@ export function updateCamera(dt) {
   let aggro = 0; const cen = new THREE.Vector3();
   for (const e of G.enemies) if (e.aggro && !e.ko && e.pos.distanceTo(p.pos) < 12) { cen.add(e.pos); aggro++; }
   if (aggro) { cen.multiplyScalar(1 / aggro); want.lerp(cen.setY(0.8), 0.25); }
-  const zw = (aggro > 2 ? 1.12 : 1.0) * (G.cinematic ? 0.72 : 1);
+  const zw = (aggro > 2 ? 1.12 : 1.0) * (G.cinematic ? 0.72 : 1) * (G.camZoom || 1);
   R.zoom += (zw - R.zoom) * (1 - Math.exp(-2 * dt));
-  want.x = Math.max(-12.2, Math.min(13.5, want.x)); want.z = Math.max(-9.8, Math.min(9.6, want.z));
+  if (G.camFocus) { const f = G.camFocus; want.x += (f.x - want.x) * f.w; want.z += (f.z - want.z) * f.w; } // (the tutorial looks at things)
+  const cc = G.camClamp || [-12.2, 13.5, -9.8, 9.6]; // (each level keeps the camera over its own floor)
+  want.x = Math.max(cc[0], Math.min(cc[1], want.x)); want.z = Math.max(cc[2], Math.min(cc[3], want.z));
   R.camTarget.lerp(want, 1 - Math.exp(-5 * dt));
   const off = R.camOffset.clone().multiplyScalar(R.zoom);
   G.camera.position.copy(R.camTarget).add(off);
@@ -292,12 +294,10 @@ export function renderFrame(title) {
     if (R.gtao) R.gtao.enabled = true; R.bloom.enabled = GFX.bloom !== 'off'; R.grade.uniforms.vig.value = 0.35;
     return;
   }
-  const fu = R.floorMat && R.floorMat.userData.uniforms;
-  if (fu && R.reflStrength0 === undefined) R.reflStrength0 = fu.reflStrength.value;
   if (R.reflScale > 0) renderReflection();
-  if (fu) {
-    fu.reflMatrix.value.copy(R.reflMatrix);
-    fu.reflStrength.value = R.reflScale > 0 ? R.reflStrength0 : 0;
+  for (const f of R.floorUs || []) { // (every floor: the basement has concrete and marble)
+    f.u.reflMatrix.value.copy(R.reflMatrix);
+    f.u.reflStrength.value = R.reflScale > 0 ? f.s0 : 0;
   }
   R.composer.render();
 }

@@ -9,6 +9,7 @@ import { R, shadowSize } from './render.js';
 import { addDestructible, addChair } from './destruct.js';
 import { FX } from './fx.js';
 import { SFX } from './audio.js';
+import { fireDoor } from './doors.js';
 
 export const L = { models: {}, gltf: {}, mats: {}, occluders: [], plantSpots: [] };
 
@@ -25,6 +26,13 @@ const FIT = {
   Bench: ['x', 1.7], Shelf: ['z', 1.8], Console: ['x', 1.75], Printer: ['y', 1.2], Bust: ['y', 0.62], Piano: ['x', 1.6],
   Ottoman: ['y', 0.46], Bin: ['y', 0.44], LeatherChair: ['y', 0.95], Door: ['y', 2.2], GoldBar: ['z', 0.3],
 };
+// the custodian's basement (tutorial): Yusuf's props, normalised the same way
+const FIT_BASEMENT = {
+  BulletinBoard: ['x', 1.25], Fridge: ['y', 2.0], FireDoors: ['y', 2.25], AirCon: ['x', 0.95], Locker: ['y', 1.95],
+  ExitSign: ['z', 0.42], Boxes: ['x', 1.45], Sink: ['x', 1.9], Crates: ['x', 1.55], PanelBoxes: ['z', 1.9], Cabinet: ['x', 1.9], Box: ['y', 0.36], WetSign: ['y', 0.64],
+  MilkCrate: ['y', 0.3], FoldChairs: ['y', 0.88], MetalDesk: ['y', 0.76], Buckets: ['y', 0.5], DrainCleaner: ['y', 0.24], Plunger: ['y', 0.5], Grate: ['x', 0.6], FireBox: ['y', 1.45],
+};
+const LOBBY_SHARED = ['FireDoors', 'ExitSign'];
 L.dims = {};
 function fitModel(n, scene) {
   scene.updateMatrixWorld(true);
@@ -70,19 +78,24 @@ async function loadB64(loader, n) {
     return g;
 }
 
-export async function loadModels(onProgress) {
+export async function loadModels(onProgress, level = 'lobby') {
+  const base = level === 'basement';
+  if (base) Object.assign(FIT, FIT_BASEMENT);
+  else for (const n of LOBBY_SHARED) FIT[n] = FIT_BASEMENT[n]; // (the stairwell door up from the basement)
   const loader = new GLTFLoader();
   // authored animations made in Blender (retargeted onto Karim's skeleton)
   try { const r = await fetch('models/Idle_Mop.json'); if (r.ok) L.idleMop = await r.json(); } catch (e) {}
   try { const r = await fetch('models/Sweep_Mop.json'); if (r.ok) L.sweepMop = await r.json(); } catch (e) {}
   try { const r = await fetch('models/Dodge.json'); if (r.ok) L.dodgeClip = await r.json(); } catch (e) {}
   try { const r = await fetch('models/RobberAnims.json'); if (r.ok) L.robberAnims = await r.json(); } catch (e) {}
-  const names = Object.keys(EXT), fits = Object.keys(FIT);
-  let done = 0; const total = names.length + fits.length + 4;
-  const extra = ['MainChar', 'Sign', 'Karim', 'RobberRig'];
+  if (!base) try { const r = await fetch('models/TitlePose.json'); if (r.ok) L.titlePose = await r.json(); } catch (e) {}
+  // (the basement only needs the cart, a chair, a bin and its own props)
+  const names = base ? ['Cart', 'OfficeChair', 'PottedPlant'] : Object.keys(EXT), fits = base ? ['Bin', 'Bench', ...Object.keys(FIT_BASEMENT)] : Object.keys(FIT).filter(n => !FIT_BASEMENT[n] || LOBBY_SHARED.includes(n));
+  const extra = base ? ['MainChar', 'Karim', 'RobberRig'] : ['MainChar', 'Sign', 'Karim', 'RobberRig'];
+  let done = 0; const total = names.length + fits.length + extra.length;
   L.rugTex = new THREE.TextureLoader().load('models/rug.jpg', t => { t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8; });
   await Promise.all([...extra.map(async n => { const g = await loadB64(loader, n); L.gltf[n] = g; L.models[n] = g.scene; done++; onProgress && onProgress(done / total); }),
-    ...fits.map(async n => { const g = await loadB64(loader, n); L.models[n] = fitModel(n, g.scene); done++; onProgress && onProgress(done / total); }),
+    ...fits.map(async n => { const g = await loadB64(loader, n); L.gltf[n] = g; L.models[n] = fitModel(n, g.scene); done++; onProgress && onProgress(done / total); }),
     ...names.map(async n => {
     const g = await loadB64(loader, n);
     g.scene.traverse(o => {
@@ -136,7 +149,7 @@ const CONTACT = { Cart: 0.6, CoffeeTable: 0.45, Computer: 0.45, Couch: 0.7, Desk
 const FOOT = { PottedPlant: 0.55, SmallerPlantBox: 0.75, PlantBox: 0.95 }; // pots are narrower than their leaves
 
 // a newer prop (already normalised: base on the floor, real size); optional collider + contact shadow
-function prop2(name, x, z, yaw = 0, o = {}) {
+export function prop2(name, x, z, yaw = 0, o = {}) {
   const obj = L.models[name].clone(); obj.position.set(x, o.y || 0, z); obj.rotation.y = yaw; G.scene.add(obj);
   const [w, h, d] = L.dims[name];
   if (o.contact !== 0) contactShadow(w * (o.fw ?? 1), d * (o.fd ?? 1), o.contact ?? 0.5, obj);
@@ -151,11 +164,11 @@ function rug(x, z, wShort, dLong, yaw = 0) {
   return g;
 }
 // light things you can kick about: bins (spill their rubbish when they go over) and ottoman stools
-const BIN = (x, z) => { const p = prop2('Bin', x, z, Math.random() * 6, { contact: 0.4, col: false }); addChair(p.obj, { r: 0.2, light: true, tipForce: 2.5, tipAngle: Math.PI / 2, tipLift: 0.19, cost: 0, spill: true }); return p; };
+export const BIN = (x, z) => { const p = prop2('Bin', x, z, Math.random() * 6, { contact: 0.4, col: false }); addChair(p.obj, { r: 0.2, light: true, tipForce: 2.5, tipAngle: Math.PI / 2, tipLift: 0.19, cost: 0, spill: true }); return p; };
 const STOOL = (x, z, yaw) => { const p = prop2('Ottoman', x, z, yaw, { contact: 0.45, col: false }); addChair(p.obj, { r: 0.3, light: true, tipForce: 4.5, tipAngle: Math.PI / 2, tipLift: 0.22, cost: 0 }); return p; };
 const PLANT = (x, z) => { const p = prop('PottedPlant', x, z, (Math.random() * 4 | 0) * Math.PI / 2); addDestructible({ kind: 'plant', obj: p.obj, box: collider(x, z, 0.45, 0.45, 0, 0, 0.95), cost: 180, name: 'Potted plant', h: p.h }); return p; };
 
-function prop(name, x, z, yaw = 0, scale = 1, y = 0) {
+export function prop(name, x, z, yaw = 0, scale = 1, y = 0) {
   const s = SCALE[name] * scale;
   const o = L.models[name].clone();
   o.scale.setScalar(s);
@@ -169,7 +182,7 @@ function prop(name, x, z, yaw = 0, scale = 1, y = 0) {
 }
 
 // ---------------- materials ----------------
-function mats() {
+export function mats() {
   const M = L.mats;
   const fl = marbleFloor();
   M.floor = new THREE.MeshStandardMaterial({ map: fl.map, roughnessMap: fl.rough, roughness: 1, metalness: 0, envMapIntensity: 0.35 });
@@ -191,7 +204,7 @@ function mats() {
   M.white = new THREE.MeshStandardMaterial({ color: 0xe8e4dc, roughness: 0.6 });
 }
 
-function box(w, h, d, mat, x, y, z, o = {}) {
+export function box(w, h, d, mat, x, y, z, o = {}) {
   const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
   m.position.set(x, y, z);
   if (o.ry) m.rotation.y = o.ry;
@@ -215,11 +228,11 @@ function box(w, h, d, mat, x, y, z, o = {}) {
   (o.parent || G.scene).add(m);
   return m;
 }
-function collider(cx, cz, w, d, yaw = 0, y0 = 0, y1 = 3, extra = {}) {
+export function collider(cx, cz, w, d, yaw = 0, y0 = 0, y1 = 3, extra = {}) {
   const b = makeBox(cx, cz, w, d, yaw, y0, y1, extra);
   G.colliders.push(b); return b;
 }
-function plane(w, h, mat, x, y, z, ry = 0, o = {}) {
+export function plane(w, h, mat, x, y, z, ry = 0, o = {}) {
   const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h), mat);
   m.position.set(x, y, z); m.rotation.y = ry; m.receiveShadow = true;
   if (o.rx) m.rotation.x = o.rx;
@@ -227,20 +240,24 @@ function plane(w, h, mat, x, y, z, ry = 0, o = {}) {
 }
 
 // ---------------- floor with planar reflection + dirt layer ----------------
-function buildFloor() {
-  const B = G.bounds;
+// opts (other levels): mat (floor material), hole (false: no stairwell), refl (reflection strength), uv(x, z) -> [u, v]
+export function buildFloor(opts = {}) {
+  const B = G.bounds, S = opts.rect || B;
   const shape = new THREE.Shape();
-  shape.moveTo(B.minX, -B.minZ); shape.lineTo(B.maxX, -B.minZ); shape.lineTo(B.maxX, -B.maxZ); shape.lineTo(B.minX, -B.maxZ); shape.closePath();
-  const hole = new THREE.Path(); // stairwell (shape coords use -z)
-  hole.moveTo(10.5, -7.5); hole.lineTo(10.5, -12.4); hole.lineTo(16.5, -12.4); hole.lineTo(16.5, -7.5); hole.closePath();
-  shape.holes.push(hole);
+  shape.moveTo(S.minX, -S.minZ); shape.lineTo(S.maxX, -S.minZ); shape.lineTo(S.maxX, -S.maxZ); shape.lineTo(S.minX, -S.maxZ); shape.closePath();
+  if (opts.hole !== false) {
+    const hole = new THREE.Path(); // stairwell (shape coords use -z)
+    hole.moveTo(10.5, -7.5); hole.lineTo(10.5, -12.4); hole.lineTo(16.5, -12.4); hole.lineTo(16.5, -7.5); hole.closePath();
+    shape.holes.push(hole);
+  }
   const geo = new THREE.ShapeGeometry(shape);
   geo.rotateX(-Math.PI / 2);
   const pos = geo.attributes.position, uv = geo.attributes.uv;
-  for (let i = 0; i < pos.count; i++) uv.setXY(i, pos.getX(i) / 4, pos.getZ(i) / 4); // 0.5 m tiles
-  const mat = L.mats.floor;
-  const uniforms = {
-    tReflect: { value: R.reflRT.texture }, reflMatrix: { value: new THREE.Matrix4() }, reflStrength: { value: 1.3 },
+  for (let i = 0; i < pos.count; i++) { if (opts.uv) uv.setXY(i, ...opts.uv(pos.getX(i), pos.getZ(i))); else uv.setXY(i, pos.getX(i) / 4, pos.getZ(i) / 4); } // 0.5 m tiles
+  const mat = opts.mat || L.mats.floor;
+  // (a second floor in the same level shares the first one's uniforms: same dirt, polish mask, reflection; its own shine)
+  const uniforms = opts.share ? { ...opts.share, reflStrength: { value: opts.refl ?? 1.3 } } : {
+    tReflect: { value: R.reflRT.texture }, reflMatrix: { value: new THREE.Matrix4() }, reflStrength: { value: opts.refl ?? 1.3 },
     tDirt: { value: FX.dirtTex }, tWet: { value: FX.wetTex }, tRough: { value: null }, uTool: GLOW.uTool, uClean: GLOW.uClean, uTime: GLOW.uTime, dirtRect: { value: new THREE.Vector4(B.minX, B.minZ, B.maxX - B.minX, B.maxZ - B.minZ) },
   };
   mat.userData.uniforms = uniforms;
@@ -285,10 +302,11 @@ function buildFloor() {
         k=mix(k,kw,wet.a);
         outgoingLight=outgoingLight*(1.0-k*0.35)+refl*k;
         // while Karim mops, the mess around him lights up gold so you can see what's left
-        // (mop: smudges and prints; polisher: the dull patches)
+        // (mop: smudges, prints and the dull patches it buffs back to a shine)
         // gold: what the tool in hand can clean; red: what needs another tool (mop: prints, smudges, dull floor)
         float isMop = uTool < 0.5 ? 1.0 : 0.0, dA = smoothstep(0.05,0.55,dirt.a);
-        outgoingLight=cleanGlow(outgoingLight,vWPos.xz,uClean,uTime,dA*isMop);
+        outgoingLight=cleanGlow(outgoingLight,vWPos.xz,uClean,uTime,max(dA,rough*0.4)*isMop);
+        outgoingLight=sheenSweep(outgoingLight,vWPos.xz,uClean,uTime,rough*isMop*0.8); // (the mop buffs dull floor: a sheen sweeps over it)
         outgoingLight=wrongGlow(outgoingLight,vWPos.xz,uClean,uTime,max(dA,rough*0.45)*(1.0-isMop));
         #include <opaque_fragment>`);
   };
@@ -296,8 +314,33 @@ function buildFloor() {
   floor.receiveShadow = true;
   floor.userData.noReflect = true;
   G.scene.add(floor);
-  R.floor = floor; R.floorMat = mat;
+  (R.floorUs = R.floorUs || []).push({ u: uniforms, s0: uniforms.reflStrength.value });
+  if (!opts.share) { R.floor = floor; R.floorMat = mat; }
+  return { mesh: floor, mat, uniforms };
 }
+
+// ---------------- the staff stairwell ----------------
+export const STAIR_DOOR = { x0: -5.75, x1: -3.55, cx: -4.65 };
+// behind the fire doors: a landing, the flight down to the basement on the left, the flight up on the right
+function stairwell(SD, wallH) {
+  const B = G.bounds, z0 = B.minZ - 0.5, W = 2.7, x0 = SD.cx - W / 2, x1 = SD.cx + W / 2, z1 = z0 - 5.2;
+  const conc = new THREE.MeshStandardMaterial({ color: 0x8f8a82, roughness: 0.8 }), wallM = new THREE.MeshStandardMaterial({ color: 0xc8c2b6, roughness: 0.85 });
+  const rail = new THREE.MeshStandardMaterial({ color: 0x2c3036, roughness: 0.4, metalness: 0.7 });
+  box(W, 0.1, 1.9, conc, SD.cx, -0.05, z0 - 0.95, { cast: false }); // landing
+  const hw = W / 2 - 0.08, run = 0.3, rise = 0.18, zs = z0 - 1.9;
+  for (let i = 0; i < 11; i++) {
+    box(hw, 0.36, run, conc, x0 + hw / 2 + 0.04, -rise * (i + 1) - 0.18, zs - run * (i + 0.5), { cast: false });            // down
+    box(hw, rise * (i + 1), run, conc, x1 - hw / 2 - 0.04, rise * (i + 1) / 2, zs - run * (i + 0.5));                     // up
+  }
+  box(0.12, 1.0, z0 - 1.9 - z1, wallM, SD.cx, 0.5, (zs + z1) / 2); // the wall between the flights, a handrail on it
+  box(0.05, 0.05, zs - z1, rail, SD.cx, 1.05, (zs + z1) / 2, { cast: false });
+  for (const x of [x0 - 0.1, x1 + 0.1]) box(0.2, wallH, z0 - z1, wallM, x, wallH / 2, (z0 + z1) / 2);
+  box(W + 0.4, wallH, 0.2, wallM, SD.cx, wallH / 2, z1 - 0.1);
+  const l = new THREE.PointLight(0xffd6a0, 9, 6, 2); l.position.set(SD.cx, 2.3, z0 - 1.2); G.scene.add(l);
+  collider(SD.cx, z0 - 0.95 - 1.1, W, 0.3); collider(x0 - 0.1, (z0 + z1) / 2, 0.2, z0 - z1); collider(x1 + 0.1, (z0 + z1) / 2, 0.2, z0 - z1);
+  L.stairDoor = fireDoor(SD.cx, B.minZ, collider(SD.cx, B.minZ - 0.12, SD.x1 - SD.x0, 0.24), { signY: 2.62, open: G.fromStairs });
+}
+export function updateStairDoor(dt) { if (L.stairDoor) L.stairDoor.update(dt); }
 
 // ---------------- architecture ----------------
 function buildArchitecture() {
@@ -308,9 +351,14 @@ function buildArchitecture() {
   const nw = (x0, x1, y0, y1, mat = M.stoneDark) => box(x1 - x0, y1 - y0, 0.5, mat, (x0 + x1) / 2, (y0 + y1) / 2, B.minZ - 0.25, { uvScale: [3, 3.5], uvWorld: true });
   nw(B.minX - 0.3, -6.5, 0, wallH, M.stoneLight); // office back wall: lighter
   // elevator openings at x -2.4..-0.8 and 0.8..2.4 (2.8 m high)
-  nw(-6.5, -2.4, 0, wallH); nw(-0.8, 0.8, 0, wallH); nw(2.4, 8.4, 0, wallH); nw(-2.4, -0.8, 2.8, wallH); nw(0.8, 2.4, 2.8, wallH);
+  // the staff stairwell (fire doors between the offices and the lifts: up to the floors above, down to the basement)
+  const SD = STAIR_DOOR;
+  nw(-6.5, SD.x0, 0, wallH); nw(SD.x1, -2.4, 0, wallH); nw(SD.x0, SD.x1, 2.45, wallH);
+  nw(-0.8, 0.8, 0, wallH); nw(2.4, 8.4, 0, wallH); nw(-2.4, -0.8, 2.8, wallH); nw(0.8, 2.4, 2.8, wallH);
   nw(11.6, B.maxX + 0.3, 0, wallH); nw(8.4, 11.6, 3.4, wallH);
-  collider(-11.2, B.minZ - 0.25, 17.6, 0.5); collider(0, B.minZ - 0.25, 1.6, 0.5); collider(11.2, B.minZ - 0.25, 17.6, 0.5);
+  collider((B.minX - 2 + SD.x0) / 2, B.minZ - 0.25, SD.x0 - B.minX + 2, 0.5); collider((SD.x1 - 2.4) / 2, B.minZ - 0.25, -2.4 - SD.x1, 0.5);
+  collider(0, B.minZ - 0.25, 1.6, 0.5); collider(11.2, B.minZ - 0.25, 17.6, 0.5);
+  stairwell(SD, wallH);
   // skirting
   box(B.maxX - B.minX, 0.12, 0.04, M.cap, 0, 0.06, B.minZ + 0.02, { cast: false });
 
@@ -475,7 +523,7 @@ function buildArchitecture() {
     { gap: 60 },
     { text: 'SERVING MIAMI', size: 30, color: '#6a6a6a', spacing: 6, weight: 400 }, { text: 'SINCE 1924', size: 30, color: '#6a6a6a', spacing: 6, weight: 400 },
   ], { top: 90 });
-  box(1.7, 3.4, 0.08, new THREE.MeshStandardMaterial({ map: motto, roughness: 0.6 }), -4.3, 2.6, B.minZ + 0.05);
+  box(1.5, 3.0, 0.08, new THREE.MeshStandardMaterial({ map: motto, roughness: 0.6 }), -4.3 + 0.0, 4.6, B.minZ + 0.05); // (above the stairwell doors)
 
   // Vault (NE): opening, interior, big round open door
   const vault = new THREE.Group(); G.scene.add(vault);
@@ -844,13 +892,18 @@ function makeArrow() {
   return { root, tilt, mesh, s: 0, yaw: null };
 }
 export function updateGuideArrow(dt) {
-  if (!G.guideArrow || !L.elevators || !G.player) { if (arrow) arrow.root.visible = false; return; }
+  const custom = G.guideTarget; // (the tutorial points it at the cart, the exit...)
+  if (!G.player || (!custom && (!G.guideArrow || !L.elevators))) { if (arrow) { arrow.s = 0; arrow.root.visible = false; } return; }
   if (!arrow) arrow = makeArrow();
   const P = G.player.pos, z0 = G.bounds.minZ;
-  let tgt = null, best = 1e9;
-  for (const e of L.elevators) { const d = Math.hypot(e.x - P.x, z0 + 0.4 - P.z); if (d < best) { best = d; tgt = e; } }
-  const dx = tgt.x - P.x, dz = z0 + 0.4 - P.z;
-  const want = G.leaving || best < 2.4 || G.state !== 'cleared' ? 0 : 1; // tuck away at the doors
+  let dx, dz, best = 1e9;
+  if (custom) { dx = custom.x - P.x; dz = custom.z - P.z; best = Math.hypot(dx, dz); }
+  else {
+    let tgt = null;
+    for (const e of L.elevators) { const d = Math.hypot(e.x - P.x, z0 + 0.4 - P.z); if (d < best) { best = d; tgt = e; } }
+    dx = tgt.x - P.x; dz = z0 + 0.4 - P.z;
+  }
+  const want = custom ? (best < (custom.near ?? 1.8) ? 0 : 1) : (G.leaving || best < 2.4 || G.state !== 'cleared' ? 0 : 1); // tuck away on arrival
   arrow.s += (want - arrow.s) * (1 - Math.exp(-(want ? 5 : 9) * dt));
   const t = G.time, pop = want ? 1 + Math.sin(Math.min(1, arrow.s) * Math.PI) * 0.15 : 1;
   arrow.root.visible = arrow.s > 0.01;
@@ -880,7 +933,7 @@ function buildProps() {
   const B = G.bounds;
 
   // The custodian's cart at the entrance
-  const cart = prop('Cart', -15.0, 10.6, Math.PI / 2 + 0.3);
+  const cart = G.fromStairs ? prop('Cart', -3.15, -10.2, Math.PI * 0.9) : prop('Cart', -15.0, 10.6, Math.PI / 2 + 0.3); // (up from the basement: waiting by the stairwell)
   addChair(cart.obj, { r: 0.62, heavy: true, noTip: true, mass: 2.2 }); // pushable, but it takes some shoving
   G.cart = cart.obj;
 
@@ -956,7 +1009,8 @@ function buildProps() {
   for (const x of [-8.0, -3.0, 2.0]) { const p = prop('PlantBox', x, 12.0, 0); C(x, 12.0, p.w * 0.95, p.d * 0.9, 0, 1.2); }
   for (const x of [-5.5, -0.5]) prop2('Bench', x, 12.2, Math.PI, { contact: 0.5 });
   PLANT(-10.0, 12.2); PLANT(4.1, 12.2);
-  for (const [x, z] of [[-3.6, -12.2], [7.6, -12.2]]) {
+  PLANT(-6.1, -12.45); // (by the stairwell doors)
+  for (const [x, z] of [[7.6, -12.2]]) {
     const p = prop('SmallerPlantBox', x, z, 0);
     addDestructible({ kind: 'plant', obj: p.obj, box: C(x, z, 1.1, 1.0, 0, 1.6), cost: 350, name: 'Planter', h: p.h });
   }

@@ -463,24 +463,47 @@ export function seedDecals(trails = []) {
 
 // worn polish: long, streaky lanes along the busy routes plus patches at the doors and the counter
 function seedDull(trails) {
+  const lanes = [];
+  for (const tr of trails.slice(0, 3)) for (let i = 0; i < tr.length - 1; i++) lanes.push([tr[i][0], tr[i][1], tr[i + 1][0], tr[i + 1][1], rnd(0.8, 1.2), 1]); // (a few of the robbers' routes: the lobby's main walkways)
+  paintDull(lanes, [[-15.8, 8.6, 2.2, 1], [-1.5, -8.5, 2.0, 0.9], [9.2, -9.4, 1.8, 0.9], [-11, -7, 1.8, 0.85]]);
+}
+// paint dull floor into the polish mask: lanes [x0, z0, x1, z1, halfWidth, alpha], patches [x, z, r, alpha]
+export function paintDull(lanes, patches, lo = 0.3, hi = 0.46) {
   const rx = DECALS.rctx; if (!rx) return;
   const W = DECALS.W, H = DECALS.H;
-  const [c, l] = [makeCanvas(W, H), null]; const x = c.getContext('2d');
+  const c = makeCanvas(W, H), x = c.getContext('2d');
   x.filter = 'blur(14px)';
   const lane = (x0, z0, x1, z1, w, a) => {
     const [p0x, p0y] = toMask(x0, z0), [p1x, p1y] = toMask(x1, z1), n = Math.max(2, Math.hypot(p1x - p0x, p1y - p0y) / 12 | 0);
     for (let i = 0; i <= n; i++) { const t = i / n, px = p0x + (p1x - p0x) * t + rnd(-8, 8), py = p0y + (p1y - p0y) * t + rnd(-8, 8);
       x.fillStyle = `rgba(255,255,255,${a * rnd(0.6, 1)})`; x.beginPath(); x.ellipse(px, py, w * MPX * rnd(0.7, 1.2), w * MPX * rnd(0.5, 0.9), Math.atan2(p1y - p0y, p1x - p0x), 0, 6.2832); x.fill(); }
   };
-  // a few of the robbers' routes (the lobby's main walkways)
-  for (const tr of trails.slice(0, 3)) for (let i = 0; i < tr.length - 1; i++) lane(tr[i][0], tr[i][1], tr[i + 1][0], tr[i + 1][1], rnd(0.8, 1.2), 1);
   const patch = (cx, cz, r, a) => { for (let k = 0; k < 7; k++) { const [px, py] = toMask(cx + gauss() * r * 0.5, cz + gauss() * r * 0.5); x.fillStyle = `rgba(255,255,255,${a * rnd(0.5, 1)})`; x.beginPath(); x.ellipse(px, py, r * MPX * rnd(0.4, 0.8), r * MPX * rnd(0.3, 0.6), rnd(0, 3), 0, 6.2832); x.fill(); } };
-  patch(-15.8, 8.6, 2.2, 1); patch(-1.5, -8.5, 2.0, 0.9); patch(9.2, -9.4, 1.8, 0.9); patch(-11, -7, 1.8, 0.85);
+  for (const l of lanes) lane(...l);
+  for (const p of patches) patch(...p);
   x.filter = 'none';
   // break it up so it reads as worn, uneven polish rather than smooth blobs
-  const nz = noiseCanvas(fbm(256, 7, 7, 4, 77), 256, 0.3, 0.46);
+  const nz = noiseCanvas(fbm(256, 7, 7, 4, 77), 256, lo, hi);
   x.globalCompositeOperation = 'destination-in'; x.drawImage(nz, 0, 0, W, H); x.globalCompositeOperation = 'source-over';
   // white on black, red channel used by the floor shader
-  rx.drawImage(c, 0, 0);
+  rx.save(); rx.globalCompositeOperation = 'lighten'; rx.drawImage(c, 0, 0); rx.restore();
+  DECALS.roughDirty = true;
+}
+// how dull a rectangle of floor still is: m^2 of floor that still looks dull (thr > 0), or the plain sum of the mask
+export function roughIn(r, thr = 0) {
+  if (!DECALS.rctx) return 0;
+  const [x0, y0] = toMask(r.x0, r.z0), [x1, y1] = toMask(r.x1, r.z1);
+  const a = Math.max(0, x0 | 0), b = Math.max(0, y0 | 0), w = Math.min(DECALS.W, x1 | 0) - a, h = Math.min(DECALS.H, y1 | 0) - b;
+  if (w <= 0 || h <= 0) return 0;
+  const d = DECALS.rctx.getImageData(a, b, w, h).data; let t = 0;
+  if (thr > 0) { const k = thr * 255; for (let i = 0; i < d.length; i += 8) if (d[i] > k) t += 255; }
+  else for (let i = 0; i < d.length; i += 8) t += d[i];
+  return t * 2 / 255 / (MPX * MPX);
+}
+// fade the dull out of a rectangle a little (the last of it buffed away at once)
+export function fadeDull(r, a) {
+  if (!DECALS.rctx) return;
+  const [x0, y0] = toMask(r.x0, r.z0), [x1, y1] = toMask(r.x1, r.z1);
+  const rx = DECALS.rctx; rx.fillStyle = `rgba(0,0,0,${Math.min(1, a)})`; rx.fillRect(x0, y0, x1 - x0, y1 - y0);
   DECALS.roughDirty = true;
 }
