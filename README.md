@@ -16,7 +16,7 @@ Open the GitHub Pages link for this repository in Chrome, Edge or Firefox on a c
 | Hold Shift | Run |
 | Space | Dodge roll |
 | Q | Mop takedown |
-| Hold Ctrl | Clean with the tool in hand |
+| Hold C (Ctrl in the desktop version) | Clean with the tool in hand |
 | 1 / 2 / 3 at the cart | Mop / vacuum / wheelbarrow |
 | Esc | Tea break (pause) |
 
