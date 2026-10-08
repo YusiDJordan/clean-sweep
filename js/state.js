@@ -1,6 +1,10 @@
 // Shared game state and small helpers
 import * as THREE from 'three';
 
+// the clean key: C in a browser (Ctrl+W/S/D next to the movement keys are browser shortcuts a page can't fully block),
+// Ctrl in the desktop (Electron) build, where there are no browser shortcuts
+export const ELECTRON = typeof navigator !== 'undefined' && /Electron/i.test(navigator.userAgent);
+export const CLEAN = ELECTRON ? { codes: ['ControlLeft', 'ControlRight'], label: 'Ctrl' } : { codes: ['KeyC'], label: 'C' };
 export const G = {
   scene: null, camera: null, renderer: null,
   time: 0, simTime: 0, timeScale: 1, slowmoT: 0, slowmoScale: 1, hitstop: 0,

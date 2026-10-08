@@ -1,6 +1,6 @@
 // Player (the custodian) and robbers: movement, free-flow mop combat, dodge, sweep, cleaning, enemy AI
 import * as THREE from 'three';
-import { G, clamp, lerp, smooth, rand, pick, angDiff, dampAngle, damp, resolveCircle, rayBox, sphereBox, pointInBox } from './state.js';
+import { G, CLEAN, clamp, lerp, smooth, rand, pick, angDiff, dampAngle, damp, resolveCircle, rayBox, sphereBox, pointInBox } from './state.js';
 import { Rig, RIG } from './rig.js';
 import { skinCharacter, KARIM_DIMS } from './skin.js';
 import { MixamoBody, mixamoDims } from './mixamo.js';
@@ -308,7 +308,7 @@ export class Player {
         if (wantRun && this.energy > (this.running ? 0 : 12)) this.running = true;
         else if (!wantRun || this.energy <= 0) this.running = false;
         if (this.running) { this.energy = Math.max(0, this.energy - 24 * dt); this.energyIdle = 0; }
-        this.cleaning = (G.input.key('ControlLeft') || G.input.key('ControlRight') || G.input.key('KeyC')) && !this.running && !G.leaving && !G.cine && this.tool !== 'barrow'; // hold Ctrl (or C) to clean
+        this.cleaning = CLEAN.codes.some(c => G.input.key(c)) && !this.running && !G.leaving && !G.cine && this.tool !== 'barrow'; // hold C (browser) / Ctrl (desktop build) to clean
         speedCap = G.ps.speed * (this.running ? RUN : this.cleaning ? 0.32 : WALK); // careful steps while he cleans (the strokes stay brisk)
         want.copy(mi).multiplyScalar(speedCap);
         if (mi.lengthSq() > 0) faceDir = mi;

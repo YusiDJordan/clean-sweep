@@ -1,6 +1,6 @@
 // Clean Sweep — bootstrap, input, game loop, director, scoring
 import * as THREE from 'three';
-import { G, rand } from './state.js';
+import { G, rand, CLEAN, ELECTRON } from './state.js';
 import { initRender, renderFrame, updateCamera, captureEnvironment, setQuality, setGfx, loadGfx, GFX, GFX_PRESETS, R, ensureEnv, compileScene } from './render.js';
 import { initTitle, updateTitle, T } from './title.js';
 import { loadModels, buildLevel, updateOccluders, updateWater, L , updateElevators, inElevator, updateGuideArrow, STAIR_DOOR, updateStairDoor, prefetchLevel } from './level.js';
@@ -25,18 +25,16 @@ const Input = {
   key(c) { return this.down.has(c); },
 };
 G.input = Input;
+{ const k = document.getElementById('cleankey'); if (k) k.textContent = 'Hold ' + CLEAN.label; }
 addEventListener('keydown', e => {
+  if (ELECTRON && e.ctrlKey && !e.metaKey) e.preventDefault(); // (desktop build: Ctrl is the clean key, never a shortcut)
   if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Tab'].includes(e.code)) e.preventDefault();
-  // Ctrl = mop: swallow the browser shortcuts a page is allowed to block (Ctrl+D bookmark, Ctrl+S save, Ctrl+A ...) while playing
-  if (e.ctrlKey && (G.state === 'play' || G.state === 'cleared') && !e.metaKey) e.preventDefault();
   if (e.repeat) return;
   Input.down.add(e.code);
   onKey(e.code);
 });
 addEventListener('keyup', e => Input.down.delete(e.code));
 addEventListener('blur', () => Input.down.clear());
-// Ctrl+W can't be blocked by a page; if the browser allows it, ask before the tab closes mid-level
-addEventListener('beforeunload', e => { if (G.state === 'play' || G.state === 'cleared') { e.preventDefault(); e.returnValue = ''; } });
 addEventListener('mousemove', e => { Input.mx = e.clientX; Input.my = e.clientY; Input.mouseActive = true; });
 addEventListener('contextmenu', e => e.preventDefault());
 addEventListener('mousedown', e => {
@@ -493,7 +491,7 @@ function loop(draw = true) {
   updateOccluders();
   updateWater(G.time);
   { // mop glow on the floor + blood
-    // the mop shows what's left while you mop (Ctrl); the vacuum and polisher show it the whole time they're in his hands
+    // the mop shows what's left while you mop (C); the vacuum and polisher show it the whole time they're in his hands
     const showGlow = G.player && G.state !== 'title' && (G.player.cleaning || G.player.tool !== 'mop' || G.tutGlow);
     G.cleanGlow = (G.cleanGlow || 0) + ((showGlow ? 0.7 : 0) - (G.cleanGlow || 0)) * (1 - Math.exp(-5 * rdt));
     const fu = R.floorMat && R.floorMat.userData.uniforms;

@@ -1,7 +1,7 @@
 // The tutorial, played in the custodian's basement: a short script of steps. A callout bubble points into the world
 // (like a cursor on a map), the keys for each step sit in the corner, and the gold arrow over Karim shows the way.
 import * as THREE from 'three';
-import { G } from './state.js';
+import { G, CLEAN } from './state.js';
 import { BS, messIn, openFireDoors, closeFireDoors, inStairwell, hallDull, shineHall } from './basement.js';
 import { nearCart } from './tools.js';
 import { litterCount } from './fx.js';
@@ -15,7 +15,7 @@ const _v = V();
 let ui = null, exitT = -1, onExit = null;
 
 const K = {
-  move: [['W', 'A', 'S', 'D'], 'Move'], run: [['Hold Shift'], 'Run'], mop: [['Hold Ctrl'], 'Clean'],
+  move: [['W', 'A', 'S', 'D'], 'Move'], run: [['Hold Shift'], 'Run'], mop: [['Hold ' + CLEAN.label], 'Clean'],
   tools: [['1'], 'Mop', ['2'], 'Vacuum', ['3'], 'Wheelbarrow'], strike: [['Left click', 'J'], 'Mop strike'],
   dodge: [['Space'], 'Dodge roll'], kick: [['Right click', 'K'], 'Front kick'],
 };
@@ -38,7 +38,7 @@ const STEPS = [
   { id: 'cart', text: () => `This is your <b class="g">cart</b>. All your tools live on it.`, keys: [K.move], target: cartTop, hl: 'cart', focus: () => ({ x: G.cart.position.x, z: G.cart.position.z, w: 0.62 }),
     enter(s) { s.p0 = P().pos.clone(); }, done: (s, t) => t > 2.8 && (t > 5.5 || P().pos.distanceTo(s.p0) > 1.5) },
   { id: 'mop', keys: [K.mop, K.move], target: () => BS.mud.c.clone().setY(0.15), guide: () => BS.mud.c,
-    text: () => `You've already got your <b class="g">mop</b>. Hold <kbd>Ctrl</kbd> and walk over the muddy footprints to mop them up.` + (P().tool !== 'mop' ? `<small>(Take the mop back first: <kbd>1</kbd> at the cart.)</small>` : ''),
+    text: () => `You've already got your <b class="g">mop</b>. Hold <kbd>${CLEAN.label}</kbd> and walk over the muddy footprints to mop them up.` + (P().tool !== 'mop' ? `<small>(Take the mop back first: <kbd>1</kbd> at the cart.)</small>` : ''),
     enter(s) { s.m0 = Math.max(0.001, messIn(BS.mud, 0)); s.p = 0; s.pt = 0; },
     update(s, dt) { s.pt -= dt; if (s.pt <= 0) { s.pt = 0.25; s.p = Math.max(s.p, 1 - messIn(BS.mud, 0) / s.m0); } },
     progress: s => s.p / 0.88, done: s => s.p >= 0.88 },
@@ -50,7 +50,7 @@ const STEPS = [
   { id: 'vacpick', keys: [K.tools], target: cartTop, hl: 'cart', guide: () => (nearCart(P().pos) ? null : G.cart.position),
     text: () => `Press <kbd>2</kbd> to take the <b class="g">vacuum</b>.` + (nearCart(P().pos) ? '' : `<small>(Tools can only be swapped at the cart.)</small>`), done: () => P().tool === 'vacuum' },
   { id: 'vacuum', keys: [K.mop, K.move], target: () => BS.spill.c.clone().setY(0.1), guide: () => BS.spill.c,
-    text: () => `Now everything the vacuum can pick up shines <b class="g">gold</b>. Hold <kbd>Ctrl</kbd> near the mess to suck it all up.` + (P().tool !== 'vacuum' ? `<small>(Take the vacuum: <kbd>2</kbd> at the cart.)</small>` : ''),
+    text: () => `Now everything the vacuum can pick up shines <b class="g">gold</b>. Hold <kbd>${CLEAN.label}</kbd> near the mess to suck it all up.` + (P().tool !== 'vacuum' ? `<small>(Take the vacuum: <kbd>2</kbd> at the cart.)</small>` : ''),
     enter(s) { s.l0 = Math.max(1, litterCount()); s.g0 = Math.max(0.001, messIn(BS.spill, 1)); s.p = 0; s.pt = 0; },
     update(s, dt) { s.pt -= dt; if (s.pt <= 0) { s.pt = 0.25; s.p = Math.max(s.p, 0.75 * (1 - litterCount() / s.l0) + 0.25 * (1 - messIn(BS.spill, 1) / s.g0)); } },
     progress: s => s.p / 0.94, done: s => s.p >= 0.94 || (litterCount() === 0 && s.p > 0.8) },
@@ -61,7 +61,7 @@ const STEPS = [
     text: () => `Through to the <b class="g">staff hall</b>. See where everyone's feet have worn the polish off the marble?`,
     done: (s, t) => P().pos.x > BS.hall.x0 + 0.6 },
   { id: 'polish', keys: [K.mop, K.move], target: () => dullSpot(), guide: () => dullSpot(), glow: () => ({ x: BS.hall.c.x, z: BS.hall.c.z, r: 7.5 }),
-    text: () => `Hold <kbd>Ctrl</kbd> and mop the dull patches, the ones shining <b class="g">gold</b>, until the marble gleams.` + (P().tool !== 'mop' ? `<small>(Take the mop: <kbd>1</kbd> at the cart.)</small>` : ''),
+    text: () => `Hold <kbd>${CLEAN.label}</kbd> and mop the dull patches, the ones shining <b class="g">gold</b>, until the marble gleams.` + (P().tool !== 'mop' ? `<small>(Take the mop: <kbd>1</kbd> at the cart.)</small>` : ''),
     enter(s) { s.r0 = Math.max(0.001, hallDull()); s.p = 0; s.pt = 0; },
     update(s, dt) { s.pt -= dt; if (s.pt <= 0) { s.pt = 0.25; s.p = Math.max(s.p, 1 - hallDull() / s.r0); } },
     progress: s => s.p / 0.75, done: s => s.p >= 0.75 },
