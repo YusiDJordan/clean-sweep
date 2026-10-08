@@ -62,9 +62,50 @@ function fitModel(n, scene) {
   return wrap;
 }
 
+// ---------- model files, kept in the browser's cache storage so a reload (New game, the stairs) doesn't download
+// them all again; the other level's files are fetched quietly in the background while you play ----------
+const MODEL_CACHE = 'cleansweep-models-48'; // (bump this whenever anything in models/ changes)
+let cacheP = null;
+function modelCache() {
+  if (!cacheP) cacheP = (async () => {
+    try {
+      if (!self.caches) return null;
+      const c = await caches.open(MODEL_CACHE);
+      caches.keys().then(ks => ks.forEach(k => { if (k.startsWith('cleansweep-models-') && k !== MODEL_CACHE) caches.delete(k); })).catch(() => {});
+      return c;
+    } catch (e) { return null; }
+  })();
+  return cacheP;
+}
+async function fetchModel(path) {
+  const c = await modelCache(), url = new URL(path, location.href).href;
+  if (c) { try { const hit = await c.match(url); if (hit) return hit; } catch (e) {} }
+  const res = await fetch(path);
+  if (res.ok && c) { try { await c.put(url, res.clone()); } catch (e) {} }
+  return res;
+}
+async function fetchJSON(path) { try { const r = await fetchModel(path); return r.ok ? await r.json() : null; } catch (e) { return null; } }
+// every file a level loads
+function levelFiles(level) {
+  const base = level === 'basement';
+  const names = base ? ['Cart', 'OfficeChair', 'PottedPlant'] : Object.keys(EXT);
+  const fits = base ? ['Bin', 'Bench', ...Object.keys(FIT_BASEMENT)] : [...Object.keys(FIT).filter(n => !FIT_BASEMENT[n]), ...LOBBY_SHARED];
+  const extra = base ? ['MainChar', 'Karim', 'RobberRig'] : ['MainChar', 'Sign', 'Karim', 'RobberRig'];
+  const json = ['Idle_Mop', 'Sweep_Mop', 'Dodge', 'RobberAnims', ...(base ? [] : ['TitlePose'])];
+  return { names, fits, extra, json };
+}
+// fetch the other level's files into the cache, one at a time, while the player is busy
+export async function prefetchLevel(level) {
+  const f = levelFiles(level), c = await modelCache(); if (!c) return;
+  const paths = [...[...f.extra, ...f.fits, ...f.names].map(n => `models/${n}.txt`), ...f.json.map(n => `models/${n}.json`)];
+  for (const p of paths) {
+    try { if (!(await c.match(new URL(p, location.href).href))) { await fetchModel(p); await new Promise(r => setTimeout(r, 120)); } } catch (e) {}
+  }
+}
+
 // models ship as base64 text (the host serves .txt but not .glb); decode and parse in memory
 async function loadB64(loader, n) {
-    const res = await fetch(`models/${n}.txt`);
+    const res = await fetchModel(`models/${n}.txt`);
     if (!res.ok) throw new Error(`model ${n} (${res.status})`);
     const b64 = (await res.text()).trim();
     const bin = atob(b64), buf = new Uint8Array(bin.length);
@@ -84,14 +125,9 @@ export async function loadModels(onProgress, level = 'lobby') {
   else for (const n of LOBBY_SHARED) FIT[n] = FIT_BASEMENT[n]; // (the stairwell door up from the basement)
   const loader = new GLTFLoader();
   // authored animations made in Blender (retargeted onto Karim's skeleton)
-  try { const r = await fetch('models/Idle_Mop.json'); if (r.ok) L.idleMop = await r.json(); } catch (e) {}
-  try { const r = await fetch('models/Sweep_Mop.json'); if (r.ok) L.sweepMop = await r.json(); } catch (e) {}
-  try { const r = await fetch('models/Dodge.json'); if (r.ok) L.dodgeClip = await r.json(); } catch (e) {}
-  try { const r = await fetch('models/RobberAnims.json'); if (r.ok) L.robberAnims = await r.json(); } catch (e) {}
-  if (!base) try { const r = await fetch('models/TitlePose.json'); if (r.ok) L.titlePose = await r.json(); } catch (e) {}
+  [L.idleMop, L.sweepMop, L.dodgeClip, L.robberAnims, L.titlePose] = await Promise.all(['Idle_Mop', 'Sweep_Mop', 'Dodge', 'RobberAnims', base ? null : 'TitlePose'].map(n => n ? fetchJSON(`models/${n}.json`) : null));
   // (the basement only needs the cart, a chair, a bin and its own props)
-  const names = base ? ['Cart', 'OfficeChair', 'PottedPlant'] : Object.keys(EXT), fits = base ? ['Bin', 'Bench', ...Object.keys(FIT_BASEMENT)] : Object.keys(FIT).filter(n => !FIT_BASEMENT[n] || LOBBY_SHARED.includes(n));
-  const extra = base ? ['MainChar', 'Karim', 'RobberRig'] : ['MainChar', 'Sign', 'Karim', 'RobberRig'];
+  const { names, fits, extra } = levelFiles(level);
   let done = 0; const total = names.length + fits.length + extra.length;
   L.rugTex = new THREE.TextureLoader().load('models/rug.jpg', t => { t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8; });
   await Promise.all([...extra.map(async n => { const g = await loadB64(loader, n); L.gltf[n] = g; L.models[n] = g.scene; done++; onProgress && onProgress(done / total); }),
@@ -328,17 +364,31 @@ function stairwell(SD, wallH) {
   const rail = new THREE.MeshStandardMaterial({ color: 0x2c3036, roughness: 0.4, metalness: 0.7 });
   box(W, 0.1, 1.9, conc, SD.cx, -0.05, z0 - 0.95, { cast: false }); // landing
   const hw = W / 2 - 0.08, run = 0.3, rise = 0.18, zs = z0 - 1.9;
+  const nose = [], nb = (x, y, z) => { const g = new THREE.BoxGeometry(hw - 0.02, 0.014, 0.05); g.translate(x, y, z); nose.push(g); };
   for (let i = 0; i < 11; i++) {
     box(hw, 0.36, run, conc, x0 + hw / 2 + 0.04, -rise * (i + 1) - 0.18, zs - run * (i + 0.5), { cast: false });            // down
     box(hw, rise * (i + 1), run, conc, x1 - hw / 2 - 0.04, rise * (i + 1) / 2, zs - run * (i + 0.5));                     // up
+    nb(x0 + hw / 2 + 0.04, -rise * (i + 1) + 0.007, zs - run * (i + 1) + 0.025);  // metal nosing on each tread's edge (so the steps read)
+    nb(x1 - hw / 2 - 0.04, rise * (i + 1) + 0.007, zs - run * i - 0.025);
   }
-  box(0.12, 1.0, z0 - 1.9 - z1, wallM, SD.cx, 0.5, (zs + z1) / 2); // the wall between the flights, a handrail on it
+  { const pos = [], idx = []; let o = 0; // (one mesh for all the nosings)
+    for (const g of nose) { const p = g.attributes.position.array, ix = g.index.array; for (const v of p) pos.push(v); for (const k of ix) idx.push(k + o); o += p.length / 3; }
+    const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setIndex(idx); g.computeVertexNormals();
+    const m = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color: 0xc9ccd0, roughness: 0.35, metalness: 0.7 })); m.receiveShadow = true; G.scene.add(m); }
+  const DN = 2.6; // (the walls run on down past the lower flight, so the stairs never float over nothing)
+  box(0.12, 1.0 + DN, z0 - 1.9 - z1, wallM, SD.cx, (1.0 - DN) / 2, (zs + z1) / 2); // the wall between the flights, a handrail on it
   box(0.05, 0.05, zs - z1, rail, SD.cx, 1.05, (zs + z1) / 2, { cast: false });
-  for (const x of [x0 - 0.1, x1 + 0.1]) box(0.2, wallH, z0 - z1, wallM, x, wallH / 2, (z0 + z1) / 2);
-  box(W + 0.4, wallH, 0.2, wallM, SD.cx, wallH / 2, z1 - 0.1);
+  for (const x of [x0 - 0.1, x1 + 0.1]) box(0.2, wallH + DN, z0 - z1, wallM, x, (wallH - DN) / 2, (z0 + z1) / 2);
+  box(W + 0.4, wallH + DN, 0.2, wallM, SD.cx, (wallH - DN) / 2, z1 - 0.1);
+  box(W / 2, 0.1, 1.2, conc, x0 + W / 4, -rise * 11 - 0.05, z1 + 0.6, { cast: false }); // the turn at the bottom
+  // the handrail down the lower flight (on the outside wall)
+  { const g = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.025, Math.hypot(zs - z1, rise * 11), 8), rail);
+    g.rotation.x = Math.PI / 2 - Math.atan2(rise * 11, zs - z1); g.position.set(x0 + 0.06, 0.9 - rise * 5.5, (zs + z1) / 2); G.scene.add(g); }
   const l = new THREE.PointLight(0xffd6a0, 9, 6, 2); l.position.set(SD.cx, 2.3, z0 - 1.2); G.scene.add(l);
-  collider(SD.cx, z0 - 0.95 - 1.1, W, 0.3); collider(x0 - 0.1, (z0 + z1) / 2, 0.2, z0 - z1); collider(x1 + 0.1, (z0 + z1) / 2, 0.2, z0 - z1);
-  L.stairDoor = fireDoor(SD.cx, B.minZ, collider(SD.cx, B.minZ - 0.12, SD.x1 - SD.x0, 0.24), { signY: 2.62, open: G.fromStairs });
+  L.stairBar = collider(SD.cx, z0 - 0.95 - 1.1, W, 0.3); collider(x0 - 0.1, (z0 + z1) / 2, 0.2, z0 - z1); collider(x1 + 0.1, (z0 + z1) / 2, 0.2, z0 - z1);
+  // (for Karim's arrival: he runs up the lower flight, across the landing and out through the doors)
+  L.stairs = { light: l, light0: l.position.clone(), fx: x0 + hw / 2 + 0.04, zTop: zs, zBot: z1, rise, run, steps: 11, z0 };
+  L.stairDoor = fireDoor(SD.cx, B.minZ, collider(SD.cx, B.minZ - 0.12, SD.x1 - SD.x0, 0.24), { signY: 2.62 });
 }
 export function updateStairDoor(dt) { if (L.stairDoor) L.stairDoor.update(dt); }
 

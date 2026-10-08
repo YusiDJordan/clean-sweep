@@ -6,7 +6,7 @@ import { BS, messIn, openFireDoors, closeFireDoors, inStairwell, hallDull, shine
 import { nearCart } from './tools.js';
 import { litterCount } from './fx.js';
 import { goldTint } from './actors.js';
-import { roughIn } from './decals.js';
+import { roughCells } from './decals.js';
 import { SFX } from './audio.js';
 
 export const TUT = { on: false, i: -1, t: 0, robber: null, done: false };
@@ -22,17 +22,14 @@ const K = {
 const cartTop = () => G.cart ? G.cart.position.clone().setY(1.25) : null;
 const robberHead = () => TUT.robber ? TUT.robber.pos.clone().setY(TUT.robber.down ? 0.5 : 1.6) : null;
 const P = () => G.player;
-// the nearest bit of the hall that's still dull (for the arrow), refreshed a few times a second
-let dullT = 0; const dullAt = V().copy(BS.hall.c);
+// the nearest bit of the hall that's still dull (for the arrow): one read of the polish mask, a few times a second
+let dullT = -1; const dullAt = V().copy(BS.hall.c);
 function dullSpot() {
-  dullT -= 1 / 60; if (dullT > 0) return dullAt;
-  dullT = 0.3;
+  if (G.time < dullT) return dullAt;
+  dullT = G.time + 0.4;
   let best = null, bd = 1e9; const p = P().pos;
-  for (let x = BS.hall.x0 + 0.4; x < BS.hall.x1; x += 0.7) for (let z = BS.hall.z0 + 0.4; z < BS.hall.z1; z += 0.7) {
-    if (roughIn({ x0: x - 0.3, x1: x + 0.3, z0: z - 0.3, z1: z + 0.3 }) < 0.06) continue;
-    const d = Math.hypot(x - p.x, z - p.z); if (d < bd) { bd = d; best = [x, z]; }
-  }
-  if (best) dullAt.set(best[0], 0, best[1]);
+  for (const c of roughCells(BS.hall)) { if (c.f < 0.15) continue; const d = Math.hypot(c.x - p.x, c.z - p.z); if (d < bd) { bd = d; best = c; } }
+  if (best) dullAt.set(best.x, 0, best.z);
   return dullAt;
 }
 
@@ -107,7 +104,7 @@ const STEPS = [
     text: () => `Out cold. Knocked-out robbers go in the <b class="g">wheelbarrow</b>. Fetch it from your cart: <kbd>3</kbd>.` + (nearCart(P().pos) ? '' : `<small>(Tools can only be swapped at the cart.)</small>`),
     enter() { SFX.play('ding'); }, done: () => P().tool === 'barrow' || TUT.robber.loaded },
   { id: 'scoop', keys: [K.move, K.run], target: robberHead, guide: () => TUT.robber.pos,
-    text: () => `Wheel it straight into him to scoop him up.` + (P().tool !== 'barrow' ? `<small>(Take the wheelbarrow: <kbd>3</kbd> at the cart.)</small>` : ''),
+    text: () => `Wheel it straight into him to scoop him up.` + (P().tool !== 'barrow' ? `<small>(Take the wheelbarrow again: walk up to it and press <kbd>3</kbd>.)</small>` : `<small>(<kbd>3</kbd> lets go of it, wherever you are.)</small>`),
     done: () => !!TUT.robber.loaded },
   { id: 'exit', keys: [K.move], target: () => V(BS.doors.cx, 1.4, BS.bounds.minZ), guide: () => V(BS.doors.cx, 0, BS.bounds.minZ - 0.4),
     text: () => `Floor clean, marble shining, robber in the barrow. That's the job, Karim. The stairs are open: head up to the <b class="g">lobby</b>.`,

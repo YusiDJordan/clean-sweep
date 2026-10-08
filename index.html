@@ -89,6 +89,7 @@ body.cleanup #toolpick{bottom:84px}
 #toolpick .tp b{position:absolute;top:4px;left:6px;font-size:11px;color:#9a917f}
 #toolpick .tp.sel{border-color:#f2c14a;box-shadow:0 0 0 1px #f2c14a,0 0 14px rgba(242,193,74,.45)}
 #toolpick .tp.sel svg{stroke:#ffd06a}
+#toolpick.solo .tp:not([data-t="barrow"]){display:none} /* (away from the cart: just the wheelbarrow, to take it or let go of it) */
 #banner{position:absolute;top:38%;left:0;right:0;text-align:center;font-family:'Permanent Marker',cursive;font-size:clamp(34px,6vw,72px);color:#fff;text-shadow:4px 4px 0 #000;opacity:0;transform:scale(1.3);transition:all .4s;pointer-events:none}
 #banner small{display:block;font-family:Oswald;font-size:20px;letter-spacing:4px;color:var(--gold);text-shadow:2px 2px 0 #000}
 #banner.show{opacity:1;transform:scale(1)}
@@ -124,6 +125,22 @@ body.tut #tut{display:block} #tut.out{opacity:0}
 #tutkeys .kr{display:flex;align-items:center;gap:5px;color:#f1ede4;font:400 16px/1 system-ui,'Segoe UI',Roboto,Arial,sans-serif} #tutkeys .kr span{margin-left:7px}
 #blackout{position:fixed;inset:0;background:#000;opacity:0;pointer-events:none;z-index:9;transition:opacity 1.1s}
 #blackout.on{opacity:1}
+/* level card: LEVEL 1 / BANK LOBBY, over black as he arrives, then it lifts away */
+#lvlcard{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none;z-index:11;opacity:0;visibility:hidden;transition:opacity .7s,visibility 0s .7s;
+  background:radial-gradient(ellipse 60% 34% at 50% 50%,rgba(0,0,0,.5),rgba(0,0,0,0))}
+#lvlcard.show{opacity:1;visibility:visible;transition:opacity .35s}
+#lvlcard .lc-in{text-align:center;padding:0 16px}
+#lvlcard .lc-k{display:flex;align-items:center;justify-content:center;gap:18px;font:600 clamp(14px,1.6vw,19px) Oswald,'Arial Narrow',Arial,sans-serif;letter-spacing:.55em;text-transform:uppercase;color:var(--gold);padding-left:.55em}
+#lvlcard .lc-k::before,#lvlcard .lc-k::after{content:'';width:clamp(40px,7vw,90px);height:2px;background:var(--gold);transform:scaleX(0);transition:transform .6s .25s}
+#lvlcard .lc-k::before{transform-origin:right}#lvlcard .lc-k::after{transform-origin:left}
+#lvlcard .lc-t{font-family:'Permanent Marker',cursive;font-size:clamp(54px,10vw,128px);line-height:1.02;color:#f6f1e7;text-shadow:5px 5px 0 var(--gold),0 0 40px rgba(0,0,0,.6);margin:6px 0 10px}
+#lvlcard .lc-s{font:400 clamp(12px,1.25vw,15px) Oswald,'Arial Narrow',Arial,sans-serif;letter-spacing:.32em;text-transform:uppercase;color:#d8cfbf}
+#lvlcard .lc-k,#lvlcard .lc-t,#lvlcard .lc-s{opacity:0;transform:translateY(18px);transition:opacity .5s,transform .7s cubic-bezier(.2,.8,.2,1)}
+#lvlcard.show .lc-k{opacity:1;transform:none;transition-delay:.1s}
+#lvlcard.show .lc-k::before,#lvlcard.show .lc-k::after{transform:scaleX(1)}
+#lvlcard.show .lc-t{opacity:1;transform:none;transition-delay:.28s}
+#lvlcard.show .lc-s{opacity:1;transform:none;transition-delay:.5s}
+#lvlcard.hide .lc-t{transform:translateY(-14px)}
 /* ---------- screens ---------- */
 #title{position:fixed;inset:0;display:flex;align-items:safe center;justify-content:flex-start;padding:5vh max(16px,6vw);overflow:auto;background:transparent;transition:opacity .6s;color:#15120d}
 #title.hide{opacity:0;pointer-events:none}
@@ -134,7 +151,8 @@ h1{font-family:'Permanent Marker',cursive;font-weight:400;font-size:clamp(52px,9
 #title h1{color:#15120d;text-shadow:5px 5px 0 var(--gold)}
 #title .lede{color:#4d473e;max-width:440px}
 .menu{display:flex;flex-direction:column;align-items:flex-start;gap:4px;margin-top:22px}
-.menu #startbtn{margin-bottom:12px}
+.menu #startbtn{margin-bottom:8px}
+.menu #newbtn{margin-bottom:14px}
 .menu .tbtn{background:none;color:#15120d;clip-path:none;font-size:22px;letter-spacing:3px;padding:6px 0 6px 0;position:relative;transition:transform .15s,color .15s}
 .menu .tbtn::before{content:'';position:absolute;left:-22px;top:50%;width:12px;height:4px;margin-top:-2px;background:var(--gold);transform:scaleX(0);transform-origin:left;transition:transform .15s}
 .menu .tbtn:hover,.menu .tbtn:focus-visible{transform:translateX(8px);color:#9a6a00;filter:none;outline:none}
@@ -206,7 +224,7 @@ button:focus-visible{outline:2px solid #fff;outline-offset:3px}
   <div id="toolpick">
     <div class="tp" data-t="mop"><b>1</b><svg viewBox="0 0 40 40"><path d="M27 4 L15 27"/><path d="M15 27 l-6 9 M15 27 l-2 10 M15 27 l2 10 M15 27 l5 8 M15 27 l-9 6"/></svg>Mop</div>
     <div class="tp" data-t="vacuum"><b>2</b><svg viewBox="0 0 40 40"><path d="M24 3 h6 M27 3 V14"/><rect x="21" y="14" width="12" height="15" rx="5"/><path d="M27 29 V33"/><path d="M14 33 h20 v3 h-20 z"/></svg>Vacuum</div>
-    <div class="tp" data-t="barrow"><b>3</b><svg viewBox="0 0 40 40"><path d="M6 14 h22 l-4 10 h-14 z"/><circle cx="29" cy="31" r="4"/><path d="M24 24 L29 31 M3 11 L10 24 M12 24 l-2 8"/></svg>Barrow</div>
+    <div class="tp" data-t="barrow"><b>3</b><svg viewBox="0 0 40 40"><path d="M6 14 h22 l-4 10 h-14 z"/><circle cx="29" cy="31" r="4"/><path d="M24 24 L29 31 M3 11 L10 24 M12 24 l-2 8"/></svg><span>Barrow</span></div>
   </div>
   <div id="banner">LOBBY SECURED</div>
   <canvas id="minimap" width="190" height="190"></canvas>
@@ -222,14 +240,15 @@ button:focus-visible{outline:2px solid #fff;outline-offset:3px}
     <p class="touchnote">Clean Sweep needs a keyboard and mouse. Open it on a computer to play.</p>
     <div class="menu">
       <button id="startbtn" disabled>Loading…</button>
+      <button id="newbtn" class="tbtn">New game</button>
       <button id="ctrlbtn" class="tbtn">Controls</button>
       <button id="gfxbtn" class="tbtn">Graphics</button>
-      <button id="newbtn" class="tbtn">New game</button>
     </div>
   </div>
 </div>
 <div id="fade"></div>
 <div id="blackout"></div>
+<div id="lvlcard"><div class="lc-in"><div class="lc-k"><span>Level 1</span></div><div class="lc-t">Bank Lobby</div><div class="lc-s">Noon Bank &middot; Brickell Avenue, Miami</div></div></div>
 
 <div id="controlsov" class="ov menuov"><div class="card"><h2>Controls</h2>
   <div class="controls">
@@ -240,7 +259,7 @@ button:focus-visible{outline:2px solid #fff;outline-offset:3px}
     <kbd>Space</kbd><span>Dodge roll: dodges bullets and bowls robbers over. Time it on a red laser lock for a perfect dodge</span>
     <kbd>Q</kbd><span>Mop Takedown (earned every 5 combo hits)</span>
     <kbd>Hold Ctrl</kbd><span>Clean with the tool in hand</span>
-    <kbd>1 / 2 / 3 at the cart</kbd><span>Mop (fights, dirt, prints, blood, dull floor) · Vacuum (paper, leaves, grit, glass, rifles) · Wheelbarrow (knocked-out robbers and their rifles)</span>
+    <kbd>1 / 2 / 3 at the cart</kbd><span>Mop (fights, dirt, prints, blood, dull floor) · Vacuum (paper, leaves, grit, glass) · Wheelbarrow (knocked-out robbers and their rifles)</span>
     <kbd>Esc</kbd><span>Tea break</span>
   </div>
   <p style="font-size:15px;margin-top:-6px">Hit a robber while he's down to finish him. Every broken window, computer and plant comes out of your score.</p>
@@ -249,7 +268,7 @@ button:focus-visible{outline:2px solid #fff;outline-offset:3px}
 <div id="gfxov" class="ov menuov"><div class="card"><h2>Graphics</h2><div id="gfx-body"></div><p style="margin-top:16px"><button id="gfxclose" class="ghost">Done</button></p></div></div>
 
 <div id="pause" class="ov"><div class="card"><h2>Tea break</h2><p>Esc to resume</p><button id="resume">Back to work</button> <button id="menubtn" class="ghost">Exit to main menu</button></div></div>
-<div id="dead" class="ov"><div class="card"><h2>Sent home early</h2><p>Karim took one too many hits. The lobby will have to wait for tomorrow.</p><button id="retry">Try again</button></div></div>
+<div id="dead" class="ov"><div class="card"><h2>Out cold</h2><p>Karim took one too many hits. Shake it off and start the level again.</p><button id="retry">Try again</button></div></div>
 <div id="results" class="ov"><div class="card"><h2>Lobby report</h2><div id="results-body"></div><p style="margin-top:18px"><button id="again">Play again</button> <button id="rshop" class="ghost">Upgrades</button></p></div></div>
 <div id="shop" class="ov"><div class="card"><h2>Supply closet</h2><p>Spend upgrade points. Karim keeps his upgrades from here on.</p><div id="shop-body"></div><p style="margin-top:16px"><button id="shopclose" class="ghost">Close</button></p></div></div>
 

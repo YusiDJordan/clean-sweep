@@ -2,7 +2,7 @@
 import * as THREE from 'three';
 import { G } from './state.js';
 import { FX, litterCount } from './fx.js';
-import { nearCart } from './tools.js';
+import { nearCart, nearBarrow } from './tools.js';
 
 const $ = id => document.getElementById(id);
 export const HUD = {
@@ -21,10 +21,16 @@ export const HUD = {
   hideObjective() { this.obj.classList.add('gone'); },
   update(dt) {
     const P = G.player; if (!P) return;
-    // tool picker: only while he's at the cart
-    const atCart = (G.state === 'play' || G.state === 'cleared') && !G.leaving && nearCart(P.pos);
-    if (atCart !== this.tpOn) { this.tpOn = atCart; this.tp.classList.toggle('on', atCart); }
-    if (atCart && this.tpTool !== P.tool) { this.tpTool = P.tool; for (const el of this.tpSlots) el.classList.toggle('sel', el.dataset.t === P.tool); }
+    // tool picker: at the cart; away from it, just the wheelbarrow (when he's pushing it, or standing at it)
+    const playing = (G.state === 'play' || G.state === 'cleared') && !G.leaving && !G.cine, atCart = playing && nearCart(P.pos);
+    const holding = P.tool === 'barrow', solo = playing && !atCart && (holding || (G.barrow && G.barrow.spot && nearBarrow(P.pos)));
+    const on = atCart || solo;
+    if (on !== this.tpOn) { this.tpOn = on; this.tp.classList.toggle('on', on); }
+    if (solo !== this.tpSolo) { this.tpSolo = solo; this.tp.classList.toggle('solo', solo); }
+    if (on && this.tpTool !== P.tool) {
+      this.tpTool = P.tool; for (const el of this.tpSlots) el.classList.toggle('sel', el.dataset.t === P.tool);
+      const lb = this.tp.querySelector('[data-t="barrow"] span'); if (lb) lb.textContent = holding ? 'Let go' : 'Barrow';
+    }
     const hp = Math.max(0, P.hp / P.maxHp);
     this.hp.style.width = (hp * 100) + '%';
     if (P.maxHp !== this.ticksN) { this.ticksN = P.maxHp; $('hpticks').style.setProperty('--n', P.maxHp); } // one segment per hit

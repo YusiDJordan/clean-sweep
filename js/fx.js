@@ -100,8 +100,9 @@ export function polishFloor(x, z, r, strength) { polishAt(x, z, r, strength); }
 // light litter (paper, banknotes, glass) is caught from much further than the grime: it slides in slowly from
 // the edge of the draught, then faster and faster, lifting off the floor as it whips into the nozzle
 const LITTER_R = 3.8, GLASS_R = 3.4;
+export const SUCKED = { paper: 0, glass: 0, leaf: 0 }; // (what the last vacuumAt swallowed: for the sounds)
 export function vacuumAt(x, z, r, dt) {
-  FX.vacT = G.time;
+  FX.vacT = G.time; SUCKED.paper = SUCKED.glass = SUCKED.leaf = 0;
   wipeDecals(x, z, r * 0.6, Math.min(1, dt * 9), 1); // grit, soil, dust
   let n = 0;
   const pull = (o, R, rest) => {
@@ -114,7 +115,7 @@ export function vacuumAt(x, z, r, dt) {
   };
   for (let i = papers.length - 1; i >= 0; i--) {
     const p = papers[i]; if (p.neat || (p.rest && p.floorY > 0.1)) continue;
-    if (pull(p, LITTER_R)) { papers.splice(i, 1); G.stats.papers++; n++; continue; }
+    if (pull(p, LITTER_R)) { papers.splice(i, 1); G.stats.papers++; n++; SUCKED.paper++; continue; }
     if (p.rest && p.suck > 0) { // flutter up off the floor on the way in
       const k = p.suck * p.suck; p.ph += dt * 18;
       p.y = p.floorY + 0.004 + 0.24 * k + Math.sin(p.ph) * 0.02 * k;
@@ -126,13 +127,13 @@ export function vacuumAt(x, z, r, dt) {
     if (pull(l, LITTER_R)) { // (swap-remove keeps each leaf's colour with it)
       const last = leaves.length - 1;
       if (i !== last) { leaves[i] = leaves[last]; leafMesh.getColorAt(last, _lc); leafMesh.setColorAt(i, _lc); leafMesh.instanceColor.needsUpdate = true; }
-      leaves.pop(); n++; continue;
+      leaves.pop(); n++; SUCKED.leaf++; continue;
     }
     if (l.suck > 0) { l.ph = (l.ph || 0) + dt * 20; l.y = 0.006 + 0.22 * l.suck * l.suck; }
   }
   for (const s of shards) {
     if (!s.active) continue;
-    if (pull(s, GLASS_R)) { s.active = false; G.stats.shards++; n++; continue; }
+    if (pull(s, GLASS_R)) { s.active = false; G.stats.shards++; n++; SUCKED.glass++; continue; }
     if (s.rest && s.suck > 0) s.y = (s.fy || 0) + 0.005 + 0.14 * s.suck * s.suck;
   }
   return n;
@@ -140,11 +141,17 @@ export function vacuumAt(x, z, r, dt) {
 export function cleanAt(x, z, r, strength = 0.35) {
   for (const [ctx, sc] of [[FX.dirtCtx, 1]]) {
     const px = (x - B().minX) * PXM * sc, py = (z - B().minZ) * PXM * sc, rr = r * PXM * sc;
+    // nothing there? then don't touch the layer (re-sending the whole floor texture to the GPU for a clean patch
+    // of floor was what made mopping choppy)
+    const x0 = Math.max(0, px - rr | 0), y0 = Math.max(0, py - rr | 0), w = Math.min(FX.dirtCanvas.width - x0, Math.ceil(2 * rr)), h = Math.min(FX.dirtCanvas.height - y0, Math.ceil(2 * rr));
+    if (w <= 0 || h <= 0) continue;
+    { const d = ctx.getImageData(x0, y0, w, h).data; let any = false; for (let i = 3; i < d.length; i += 12) if (d[i] > 2) { any = true; break; } if (!any) continue; }
     ctx.save(); ctx.globalCompositeOperation = 'destination-out';
     const g = ctx.createRadialGradient(px, py, 0, px, py, rr);
     g.addColorStop(0, `rgba(0,0,0,${strength})`); g.addColorStop(0.7, `rgba(0,0,0,${strength * 0.7})`); g.addColorStop(1, 'rgba(0,0,0,0)');
     ctx.fillStyle = g; ctx.beginPath(); ctx.arc(px, py, rr, 0, Math.PI * 2); ctx.fill();
     ctx.restore();
+    FX.dirtDirty = true;
   }
   wipeDecals(x, z, r, strength, 0); // the mop's kind of grime decals (smears, scuffs, prints...)
   // wipe blood the same way: the mop erases it from each pool's mask where it passes (no shrinking)
@@ -160,7 +167,6 @@ export function cleanAt(x, z, r, strength = 0.35) {
     ctx.fillStyle = g; ctx.beginPath(); ctx.arc(px, py, rr, 0, Math.PI * 2); ctx.fill();
     p.tex.needsUpdate = true; p.wiped = true;
   }
-  FX.dirtDirty = true;
 }
 
 // ---------- blood pools: smooth glossy decals (resolution independent) that grow, then can be mopped away ----------

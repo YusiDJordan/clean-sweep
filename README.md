@@ -6,7 +6,7 @@
 
 Open the GitHub Pages link for this repository in Chrome, Edge or Firefox on a computer. You need a keyboard and a mouse.
 
-**New game** starts Karim's shift in the custodian's basement, a short tutorial that walks you through every tool and your first robber. Then he takes the stairs up to the lobby. **Start** goes straight to the lobby.
+**New game** starts Karim's shift in the custodian's basement, a short tutorial that walks you through every tool and your first robber. Then he takes the stairs up to the lobby. **Continue** goes straight to the lobby.
 
 | Key | Action |
 | --- | --- |

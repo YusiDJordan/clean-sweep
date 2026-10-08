@@ -6,7 +6,7 @@ import { L } from './level.js';
 import { KARIM_SCALE } from './mixamo.js';
 import { buildDisplayMop, addMopPole } from './tools.js';
 
-export const T = { scene: null, cam: null, ready: false, a: 0.55 };
+export const T = { scene: null, cam: null, ready: false, a: 5.26 }; // (starts on the side that shows his face and the swing)
 
 // a soft round shadow texture (contact shadow under his feet)
 function blobTex() {
@@ -70,7 +70,8 @@ export function initTitle(tex) {
   updateTitle(0);
 }
 
-// Karim frozen mid mop-strike (a frame captured from the game: every bone, the mop, and its flying strands)
+// Karim frozen mid-attack: Yusuf's pose from Blender (every bone, and the mop where he holds it), the game's mop in
+// his hands with its strands flung out (or, from the older capture, a frame of the in-game strike with its strands)
 function posedKarim(scene, kg, tex, pose) {
   const root = new THREE.Group(); scene.add(root); T.root = root;
   const k = skClone(kg.scene);
@@ -81,8 +82,11 @@ function posedKarim(scene, kg, tex, pose) {
     if (o.isBone) { const b = pose.bones[o.name.replace(/^mixamorig:?/, '')]; if (b) { o.quaternion.fromArray(b.q); o.position.fromArray(b.p); } }
   });
   const mop = new THREE.Group(); addMopPole(mop, 1.16);
+  new THREE.Matrix4().fromArray(pose.weaponRel).decompose(mop.position, mop.quaternion, mop.scale);
   const seg = new THREE.CylinderGeometry(0.0095, 0.0115, 1, 7, 1); seg.translate(0, 0.5, 0);
-  const im = new THREE.InstancedMesh(seg, new THREE.MeshStandardMaterial({ color: 0xebe5d4, roughness: 0.88 }), pose.count), m4 = new THREE.Matrix4();
+  const strandMat = new THREE.MeshStandardMaterial({ color: 0xebe5d4, roughness: 0.88 });
+  if (!pose.strands) { mop.add(burstStrands(seg, strandMat, mop)); finishPose(root, k, mop); return; }
+  const im = new THREE.InstancedMesh(seg, strandMat, pose.count), m4 = new THREE.Matrix4();
   // fan the strands out, the way a mop head bursts open at the fastest part of a swing
   const SEG = 6, n = pose.count / SEG, up = new THREE.Vector3(0, 1, 0), P = new THREE.Vector3(), Q = new THREE.Quaternion(), S = new THREE.Vector3();
   for (let i = 0; i < n; i++) {
@@ -100,13 +104,39 @@ function posedKarim(scene, kg, tex, pose) {
     }
   }
   im.frustumCulled = false; mop.add(im);
-  new THREE.Matrix4().fromArray(pose.weaponRel).decompose(mop.position, mop.quaternion, mop.scale);
+  finishPose(root, k, mop);
+}
+function finishPose(root, k, mop) {
   mop.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } }); root.add(mop);
   // stand him in the middle of the stage (hips over the centre)
   root.updateMatrixWorld(true);
   let hips = null; k.traverse(o => { if (o.isBone && /Hips$/.test(o.name)) hips = o; });
-  if (hips) { const h = hips.getWorldPosition(new THREE.Vector3()); root.position.x -= h.x; root.position.z -= h.z; }
+  if (hips) { const h = hips.getWorldPosition(new THREE.Vector3()); root.position.x -= h.x; root.position.z -= h.z; T.hipY = h.y; }
   T.posed = true;
+}
+// the mop head bursting open mid-swing: every strand flung out from the head in a wide fan, the tips trailing
+// a little back up the way the swing came (weapon space: the pole runs along +Y, the head at its top end)
+function burstStrands(seg, mat, mop) {
+  const N = 48, SEG = 6, ML = 1.16, head = ML / 2 + 0.025;
+  const im = new THREE.InstancedMesh(seg, mat, N * SEG), m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), sc = new THREE.Vector3();
+  const up = new THREE.Vector3(0, 1, 0), Y = new THREE.Vector3(0, 1, 0);
+  mop.updateMatrix(); // world up, seen from the mop: a downward chop leaves the strands streaming up behind it
+  const trail = new THREE.Vector3(0, 1, 0).applyQuaternion(mop.quaternion.clone().invert()); trail.addScaledVector(Y, -trail.dot(Y)).normalize();
+  for (let i = 0; i < N; i++) {
+    const a = i / N * Math.PI * 2 + Math.sin(i * 12.9898) * 0.25, ring = i % 3, r = 0.01 + ring * 0.011;
+    const radial = new THREE.Vector3(Math.cos(a), 0, Math.sin(a));
+    const spread = 0.85 + ring * 0.22 + (((i * 7) % 5) - 2) * 0.05;
+    const out = Y.clone().multiplyScalar(0.62).addScaledVector(radial, spread).addScaledVector(trail, 0.3).normalize();
+    const tipDir = Y.clone().multiplyScalar(0.4).addScaledVector(radial, spread * 0.8).addScaledVector(trail, 0.75).normalize();
+    const len = (0.25 + ((i * 5) % 4) * 0.022) / SEG, p = radial.clone().multiplyScalar(r).setY(head);
+    for (let j = 0; j < SEG; j++) {
+      const d = out.clone().lerp(tipDir, j / (SEG - 1)).normalize();
+      im.setMatrixAt(i * SEG + j, m4.compose(p, q.setFromUnitVectors(up, d), sc.set(1, len, 1)));
+      p.addScaledVector(d, len);
+    }
+  }
+  im.frustumCulled = false; im.castShadow = true;
+  return im;
 }
 
 const _q = new THREE.Quaternion(), _p = new THREE.Vector3(), _d = new THREE.Vector3(), _flip = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI);
@@ -133,8 +163,9 @@ function orbit(dt) {
   // the camera circles him slowly; on wide screens he stands right of centre, clear of the menu
   T.a += dt * (Math.PI * 2 / 80);
   const r = 5.1, cam = T.cam;
-  cam.position.set(Math.sin(T.a) * r, 1.25, Math.cos(T.a) * r);
-  cam.lookAt(0, 0.98, 0);
+  const ly = T.hipY ? Math.max(0.98, T.hipY - 0.12) : 0.98; // (he's up in the air: look up at him a little)
+  cam.position.set(Math.sin(T.a) * r, ly + 0.27, Math.cos(T.a) * r);
+  cam.lookAt(0, ly, 0);
   const W = innerWidth, Hh = innerHeight, wide = W / Hh > 1.15;
   cam.aspect = W / Hh; cam.fov = wide ? 27 : 38;
   if (wide) cam.setViewOffset(W, Hh, -W * 0.17, 0, W, Hh); else cam.clearViewOffset();

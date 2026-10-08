@@ -87,7 +87,9 @@ function buildComposer() {
   const size = renderer.getDrawingBufferSize(new THREE.Vector2());
   const maxS = renderer.capabilities.maxSamples || 4;
   const samples = GFX.aa === 'msaa8' ? Math.min(8, maxS) : GFX.aa === 'msaa4' ? Math.min(4, maxS) : 0;
-  const rt = new THREE.WebGLRenderTarget(size.x, size.y, { type: THREE.HalfFloatType, samples, stencilBuffer: true }); // (stencil: the target outline)
+  // (stencil: the target outline. Only the scene pass uses depth and stencil, so they're never copied out of the
+  // multisampled buffer: resolving stencil is very slow on Windows' D3D backend and was dragging the frame rate down)
+  const rt = new THREE.WebGLRenderTarget(size.x, size.y, { type: THREE.HalfFloatType, samples, stencilBuffer: true, resolveDepthBuffer: false, resolveStencilBuffer: false });
   const composer = new EffectComposer(renderer, rt);
   R.renderPass = new RenderPass(G.scene, G.camera);
   composer.addPass(R.renderPass);
@@ -216,8 +218,25 @@ export function renderReflection() {
 }
 
 // One-time environment capture of the finished level (fake 1-bounce GI + local reflections)
+// a stand-in (black) environment map of the same size as the real one, so every material is compiled once, in the
+// variant the game actually draws with, before the real probe exists
+let dummyEnv = null;
+export function ensureEnv() {
+  if (G.scene.environment) return;
+  const pm = new THREE.PMREMGenerator(G.renderer); dummyEnv = pm.fromScene(new THREE.Scene(), 0, 0.1, 1, { size: 256 }); pm.dispose();
+  G.scene.environment = dummyEnv.texture;
+}
+// compile every material of a scene for the composer's HDR target (that's where the game draws, never straight to
+// the screen), letting the browser compile them in parallel where it can
+export async function compileScene(scene, cam) {
+  const r = G.renderer, prev = r.getRenderTarget();
+  r.setRenderTarget(R.composer.renderTarget1);
+  try { await r.compileAsync(scene, cam); } catch (e) { r.compile(scene, cam); }
+  r.setRenderTarget(prev);
+}
 export function captureEnvironment(pos) {
   const r = G.renderer;
+  ensureEnv();
   const cubeRT = new THREE.WebGLCubeRenderTarget(256, { type: THREE.HalfFloatType });
   const cc = new THREE.CubeCamera(0.3, 80, cubeRT);
   cc.layers.enable(1); // ceiling only visible to the probe
@@ -237,6 +256,7 @@ export function captureEnvironment(pos) {
   for (const o of hidden) o.visible = true;
   G.scene.remove(cc);
   cubeRT.dispose(); pm.dispose();
+  if (dummyEnv) { dummyEnv.dispose(); dummyEnv = null; }
 }
 
 const _shake = new THREE.Vector3();
@@ -245,6 +265,12 @@ export function updateCamera(dt) {
   const p = G.player;
   if (!p) return;
   if (G.debugCam) { G.camera.position.copy(G.debugCam[0]); G.camera.lookAt(G.debugCam[1]); G.camera.updateMatrixWorld(); return; }
+  if (G.cineCam) { // a cinematic shot (the arrival up the stairs): its own position, target and lens
+    const c = G.cineCam; if (!R.fov0) R.fov0 = G.camera.fov;
+    if (G.camera.fov !== c.fov) { G.camera.fov = c.fov; G.camera.updateProjectionMatrix(); }
+    G.camera.position.copy(c.pos); G.camera.lookAt(c.look); G.camera.updateMatrixWorld(); return;
+  }
+  if (R.fov0) { G.camera.fov = R.fov0; R.fov0 = 0; G.camera.updateProjectionMatrix(); }
   // leaving: swing round to face the elevator so we see Karim turn and the doors close on him
   if (G.leaving) {
     const e = G.leaving.e, z0 = G.bounds.minZ, k = 1 - Math.exp(-(G.leaving.phase === 'close' ? 1.6 : 2.4) * dt);
@@ -255,10 +281,10 @@ export function updateCamera(dt) {
     G.camera.position.lerp(_lv, k); R.leaveLook.lerp(_lt, k);
     G.camera.lookAt(R.leaveLook); G.camera.updateMatrixWorld(); return;
   }
-  const want = p.pos.clone();
+  const want = (G.camHold || p.pos).clone(); // (camHold: the camera waits somewhere, e.g. for him to come through a door)
   want.y = 0.8;
   // lead toward movement + nearby fight centroid
-  want.x += p.vel.x * 0.18; want.z += p.vel.z * 0.18;
+  if (!G.camHold) { want.x += p.vel.x * 0.18; want.z += p.vel.z * 0.18; }
   let aggro = 0; const cen = new THREE.Vector3();
   for (const e of G.enemies) if (e.aggro && !e.ko && e.pos.distanceTo(p.pos) < 12) { cen.add(e.pos); aggro++; }
   if (aggro) { cen.multiplyScalar(1 / aggro); want.lerp(cen.setY(0.8), 0.25); }

@@ -1,9 +1,9 @@
 // Clean Sweep — bootstrap, input, game loop, director, scoring
 import * as THREE from 'three';
 import { G, rand } from './state.js';
-import { initRender, renderFrame, updateCamera, captureEnvironment, setQuality, setGfx, loadGfx, GFX, GFX_PRESETS, R } from './render.js';
+import { initRender, renderFrame, updateCamera, captureEnvironment, setQuality, setGfx, loadGfx, GFX, GFX_PRESETS, R, ensureEnv, compileScene } from './render.js';
 import { initTitle, updateTitle, T } from './title.js';
-import { loadModels, buildLevel, updateOccluders, updateWater, L , updateElevators, inElevator, updateGuideArrow, STAIR_DOOR, updateStairDoor } from './level.js';
+import { loadModels, buildLevel, updateOccluders, updateWater, L , updateElevators, inElevator, updateGuideArrow, STAIR_DOOR, updateStairDoor, prefetchLevel } from './level.js';
 import { initDecals } from './decals.js';
 import { initRobberAnims } from './robanim.js';
 import { buildCartTools, updateCartTools, nearCart, TOOL_ORDER, buildBarrow, parkBarrow, updateBarrowHops } from './tools.js';
@@ -40,7 +40,7 @@ addEventListener('beforeunload', e => { if (G.state === 'play' || G.state === 'c
 addEventListener('mousemove', e => { Input.mx = e.clientX; Input.my = e.clientY; Input.mouseActive = true; });
 addEventListener('contextmenu', e => e.preventDefault());
 addEventListener('mousedown', e => {
-  if ((G.state !== 'play' && G.state !== 'cleared') || G.leaving) return;
+  if ((G.state !== 'play' && G.state !== 'cleared') || G.leaving || G.cine) return;
   if (e.target.closest && e.target.closest('button')) return;
   if (e.button === 0) G.player.tryAttack();
   if (e.button === 2) G.player.trySweep();
@@ -49,7 +49,7 @@ addEventListener('mousedown', e => {
 function onKey(code) {
   if (code === 'KeyM') { const m = SFX.toggleMute(); HUD.toast(m ? 'Sound off' : 'Sound on', 1.2); }
   if (code === 'KeyG') cycleQuality();
-  if ((G.state === 'play' || G.state === 'cleared') && G.leaving) return;
+  if ((G.state === 'play' || G.state === 'cleared') && (G.leaving || G.cine)) return;
   if (G.state === 'play' || G.state === 'cleared') {
     const P = G.player;
     if (code === 'KeyJ') P.tryAttack();
@@ -63,6 +63,7 @@ function onKey(code) {
     if (code === 'KeyE') P.pickTool('next');
     if (code === 'Escape' || code === 'KeyP') pause(true);
   } else if (G.state === 'pause' && (code === 'Escape' || code === 'KeyP')) pause(false);
+  else if (G.state === 'dead' && (code === 'Enter' || code === 'Space') && $('dead').classList.contains('show')) $('retry').click();
   else if (G.state === 'title' && code === 'Escape' && openMenu) closeMenu();
   else if (G.state === 'title' && (code === 'Enter' || code === 'Space') && G.ready && !openMenu) startGame();
 }
@@ -276,7 +277,12 @@ G.goToLevel = goToLevel;
 
 // ---------------- boot ----------------
 async function boot() {
-  const hadGfx = loadGfx();
+  SFX.preload();
+  let hadGfx = loadGfx();
+  try { // (v47 fixed a slowdown on Windows that made the game drop itself to Low: give the better settings another try, once)
+    if (hadGfx && GFX.preset === 'low' && !localStorage.getItem('cleansweep.gfx47')) { Object.assign(GFX, GFX_PRESETS.high, { preset: 'high' }); hadGfx = false; localStorage.removeItem('cleansweep.gfx'); }
+    localStorage.setItem('cleansweep.gfx47', '1');
+  } catch (e) {}
   const q0 = new URLSearchParams(location.search).get('q');
   if (q0) Object.assign(GFX, GFX_PRESETS[q0] || GFX_PRESETS.medium, { preset: GFX_PRESETS[q0] ? q0 : 'medium' });
   G.quality = GFX.preset; autoQ = !hadGfx && !q0; // first visit: settle the quality automatically during play
@@ -289,12 +295,15 @@ async function boot() {
   if (G.level === 'basement') { G.bounds = { ...BS.bounds }; $('loadtext').textContent = 'CLOCKING IN…'; }
   else if (next) $('loadtext').textContent = 'UP TO THE LOBBY…';
   if (G.direct) $('title').classList.add('hide');
+  const TB = [['start', performance.now()]], mark = n => TB.push([n, performance.now()]); // (boot timings: window.__bootTimes)
   initRender();
   initDirt();
   const bar = $('loadbar');
   // make sure sign fonts are ready before textures are painted
   try { await Promise.race([Promise.all(["600 40px Oswald", "400 40px 'Permanent Marker'", "700 40px 'Noto Kufi Arabic'"].map(f => document.fonts.load(f))), new Promise(r => setTimeout(r, 3000))]); } catch (e) {}
+  mark('fonts');
   await loadModels(p => bar.style.width = (p * 80) + '%', G.level);
+  mark('models');
   initRobberAnims(L.gltf.Karim, L.robberAnims); // (before anything animates Karim's skeleton)
   if (!G.direct) { let tex = null; L.models.MainChar?.traverse(o => { if (o.isMesh && o.material.map) tex = o.material.map; }); initTitle(tex); }
   if (G.level === 'basement') buildBasement(); else buildLevel();
@@ -309,26 +318,41 @@ async function boot() {
     // one robber, waiting on the stairs behind the fire doors until the tutorial lets him in
     G.enemies.push(new Enemy(BS.robber[0], BS.robber[1], 0, 1, { idle: 'guard' }));
   } else spawnEnemies();
-  if (G.fromStairs) { // on the stairwell landing, about to step out into the lobby
-    G.player.pos.set(STAIR_DOOR.cx, 0, G.bounds.minZ - 1.25); G.player.yaw = 0;
-    G.arrive = { t: 0 };
-    const g = G.enemies.find(e => Math.hypot(e.pos.x - 0.4, e.pos.z + 9.8) < 0.5); if (g) { g.pos.set(1.6, 0, -6.8); g.home && g.home.copy(g.pos); } // (not waiting right by the doors)
+  if (G.fromStairs) { // at the foot of the stairs up from the basement: he runs up them into the lobby
+    const S = L.stairs;
+    G.player.pos.set(S.fx, -S.rise * S.steps, S.zBot + 0.45); G.player.yaw = 0;
+    G.arrive = { t: 0, wp: 0, walk: new THREE.Vector3() }; G.cine = true; L.stairBar.active = false;
+    G.camHold = new THREE.Vector3(STAIR_DOOR.cx, 0.8, G.bounds.minZ + 1.9); // (the camera waits where he'll come out)
+    for (const [x, z, nx, nz] of [[0.4, -9.8, 1.6, -6.8], [-9.3, -11.6, -11.2, -11.4]]) { // (nobody waiting right by the doors)
+      const g = G.enemies.find(e => Math.hypot(e.pos.x - x, e.pos.z - z) < 0.5); if (g) { g.pos.set(nx, 0, nz); g.home && g.home.copy(g.pos); }
+    }
   }
+  mark('build');
   bar.style.width = '90%';
   // let the GPU compile, then bake the environment probe (characters hidden)
   for (const o of [G.player.rig.root, ...G.enemies.map(e => e.rig.root)]) o.traverse(m => { if (m.isMesh) m.userData.noProbe = true; });
+  ensureEnv(); R.camTarget.copy(G.camHold || G.player.pos).setY(0.8); updateCamera(1);
+  await compileScene(G.scene, G.camera); // (every shader once, the way the game draws: much quicker to start)
+  mark('shaders');
   captureEnvironment(G.level === 'basement' ? new THREE.Vector3(4, 1.6, 0) : new THREE.Vector3(-1, 2.2, 0));
-  R.camTarget.copy(G.player.pos).setY(0.8);
+  mark('envProbe');
+  R.camTarget.copy(G.camHold || G.player.pos).setY(0.8);
   updateCamera(1);
-  G.renderer.compile(G.scene, G.camera);
-  if (T.ready) { T.scene.environment = G.scene.environment; G.renderer.compile(T.scene, T.cam); }
+  if (T.ready) { T.scene.environment = G.scene.environment; await compileScene(T.scene, T.cam); }
+  mark('compile');
   makePortrait();
+  mark('portrait');
   bar.style.width = '100%';
   HUD.init();
+  mark('hud');
   setDirtBaseline();
+  mark('ready');
+  window.__bootTimes = TB.map(([n, t], i) => n + ' ' + Math.round(t - (i ? TB[i - 1][1] : t)) + 'ms').join(', ') + ' (from page start ' + Math.round(performance.now()) + 'ms)';
   G.ready = true;
   $('loading').classList.add('done');
-  $('startbtn').disabled = false; $('startbtn').textContent = 'Start';
+  $('startbtn').disabled = false; $('startbtn').textContent = 'Continue';
+  // fetch the other level's files in the background, so New game (or the stairs up) starts quickly
+  setTimeout(() => prefetchLevel(G.level === 'basement' ? 'lobby' : 'basement'), G.direct ? 6000 : 2500);
   const qs = new URLSearchParams(location.search);
   if (qs.has('manual')) { MANUAL = true; window.__step = (n = 1, dt = 1 / 60, draw = true) => { for (let i = 0; i < n; i++) { fakeDt = dt; loop(i === n - 1 && draw); } return 'ok'; }; }
   else requestAnimationFrame(loop);
@@ -383,20 +407,45 @@ function makePortrait() {
   rt.dispose();
 }
 
+// the level card: LEVEL 1 · BANK LOBBY
+function levelCard(on) { const c = $('lvlcard'); if (!c) return; c.classList.toggle('show', on); c.classList.toggle('hide', !on); }
+// arriving from the basement: the card over black, then the lobby fades up with the camera already waiting where
+// the level begins; Karim runs up the stairs (out of sight, behind the wall) and bursts through the fire doors
+function updateArrival(dt) {
+  const a = G.arrive, S = L.stairs, P = G.player, D = STAIR_DOOR, zw = G.bounds.minZ;
+  a.t += dt;
+  if (!a.lit && a.t > 2.3) { a.lit = true; $('blackout').classList.remove('on'); levelCard(false); }
+  const WP = [[S.fx, S.zTop + 0.35], [D.cx - 0.1, zw - 0.95], [D.cx, zw + 1.9]];
+  if (a.t > 2.2) {
+    G.autoRun = true;
+    const w = WP[a.wp]; G.autoWalk = a.walk.set(w[0], 0, w[1]);
+    if (a.wp < WP.length - 1 && Math.hypot(P.pos.x - w[0], P.pos.z - w[1]) < 0.5) a.wp++;
+  }
+  // up the steps (a smooth ramp, half a step up so his feet stay on the treads)
+  P.pos.y = P.pos.z < S.zTop && P.pos.x < D.cx ? Math.min(0, Math.max(-S.rise * S.steps, (P.pos.z - S.zTop) / S.run * S.rise + S.rise * 0.5)) : 0;
+  if (!a.opened && P.pos.z > zw - 1.7) { a.opened = true; L.stairDoor.open(); }
+  if (P.pos.z > zw + 1.5 || a.t > 11) {
+    G.autoWalk = null; G.autoRun = false; G.arrive = null; G.cine = false; G.camHold = null; P.pos.y = 0;
+    L.stairDoor.close(); L.stairBar.active = true;
+    $('hud').classList.add('show');
+  }
+}
+
 function startGame() {
   if (G.state !== 'title') return;
   SFX.init();
   G.state = 'play';
   computeStats(); G.player.maxHp = G.player.hp = G.ps.hp;
   $('shop').classList.remove('show'); closeMenu();
-  if (G.fromStairs) { // up from the dark stairwell
+  if (G.fromStairs) { // up from the dark stairwell: the level card over black, then he runs up the stairs (updateArrival)
     const b = $('blackout'); b.style.transition = 'none'; b.classList.add('on');
-    requestAnimationFrame(() => requestAnimationFrame(() => { b.style.transition = ''; b.classList.remove('on'); }));
+    requestAnimationFrame(() => requestAnimationFrame(() => { b.style.transition = ''; }));
   } else { // a white flash carries the studio into the lobby
     $('fade').classList.add('on'); requestAnimationFrame(() => requestAnimationFrame(() => $('fade').classList.remove('on')));
   }
   $('title').classList.add('hide');
-  $('hud').classList.add('show');
+  if (G.level === 'lobby') { levelCard(true); if (!G.fromStairs) setTimeout(() => levelCard(false), 3000); }
+  if (!G.fromStairs) $('hud').classList.add('show');
   HUD.setObjective('<b>Clean the lobby</b>. (There seem to be some visitors.)');
   if (G.level === 'basement') startTutorial(G.enemies[0], () => goToLevel('lobby'));
   perfT = 0; perfN = 0; perfSum = 0;
@@ -412,6 +461,7 @@ function loop(draw = true) {
   const nowT = performance.now(); const rdt = MANUAL ? fakeDt : Math.min((nowT - lastT) / 1000, 0.05); lastT = nowT;
   G.time += rdt;
   const active = G.state === 'play' || G.state === 'cleared' || (G.state === 'dead');
+  if (G.state !== 'play' && G.state !== 'cleared') SFX.hush(); // (no wiping or vacuum hum carrying on under a menu)
   // time scaling
   if (G.slowmoT > 0) { G.slowmoT -= rdt; G.timeScale = G.slowmoScale; } else G.timeScale += (1 - G.timeScale) * (1 - Math.exp(-6 * rdt));
   let dt = rdt * G.timeScale;
@@ -456,11 +506,7 @@ function loop(draw = true) {
   if (G.level === 'basement') updateBasement(dt);
   else {
     updateStairDoor(dt);
-    if (G.arrive && G.state === 'play') { // step out of the stairwell, then the doors swing shut behind him
-      const a = G.arrive; a.t += dt;
-      G.autoWalk = new THREE.Vector3(STAIR_DOOR.cx, 0, G.bounds.minZ + 1.7);
-      if (G.player.pos.z > G.bounds.minZ + 1.35 || a.t > 2.5) { G.autoWalk = null; G.arrive = null; L.stairDoor && L.stairDoor.close(); }
-    }
+    if (G.arrive && G.state === 'play') updateArrival(rdt);
   }
   updateGuideArrow(rdt);
   if (G.state !== 'title') HUD.update(rdt);
@@ -480,7 +526,7 @@ function loop(draw = true) {
 $('startbtn').addEventListener('click', startGame);
 $('rshop').addEventListener('click', openShop);
 $('shopclose').addEventListener('click', () => $('shop').classList.remove('show'));
-$('retry').addEventListener('click', () => location.reload());
+$('retry').addEventListener('click', () => { $('retry').textContent = 'Back to work…'; goToLevel(G.level); }); // (from the start of this level: the lobby begins at the top of the stairs again)
 $('again').addEventListener('click', () => location.reload());
 $('resume').addEventListener('click', () => pause(false));
 // New game: wipes points and upgrades (asks once more first)
@@ -494,5 +540,5 @@ $('newbtn').addEventListener('click', () => {
   goToLevel('basement'); // a fresh start begins in the basement, with the tutorial
 });
 $('menubtn').addEventListener('click', () => location.reload()); // back to the title screen
-window.G = G; window.THREE = THREE; G.__L = L; G.__FX = FX; G.__blood = bloodPool; G.__clean = cleanAt; G.__paper = spawnPaper; // debug handles
+window.G = G; window.THREE = THREE; G.__L = L; G.__SFX = SFX; G.__FX = FX; G.__blood = bloodPool; G.__clean = cleanAt; G.__paper = spawnPaper; // debug handles
 boot().catch(err => { console.error(err); $('loadtext').textContent = 'Could not start: ' + String(err && err.message || err).slice(0, 140); });

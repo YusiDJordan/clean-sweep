@@ -353,6 +353,7 @@ export class Rig {
     const axis = _d.set(0, 1, 0).applyQuaternion(tq);
     const f = dt * 60, damp = Math.pow(0.93, f), g = 9.8 * dt * dt, SEG = this.SEG;
     const inv = _m.copy(this.weapon.matrixWorld).invert(), inst = this.strandMesh;
+    const fl = this.root.position.y + 0.01; // (his own floor: on the stairs it isn't at 0)
     let k = 0;
     for (const st of this.strands) {
       const base = _s.copy(st.base).applyMatrix4(tm);
@@ -375,7 +376,7 @@ export class Rig {
         _p.copy(p).sub(q); let len = _p.length() || 1; _p.multiplyScalar(1 / len);
         if (j === 1) { const dp = _p.dot(axis); if (dp < -0.75) _p.addScaledVector(axis, -0.75 - dp).normalize(); }
         p.copy(q).addScaledVector(_p, st.seg);
-        if (p.y < 0.01) { p.y = 0.01; O[j].x += (p.x - O[j].x) * 0.45; O[j].z += (p.z - O[j].z) * 0.45; O[j].y = p.y; }
+        if (p.y < fl) { p.y = fl; O[j].x += (p.x - O[j].x) * 0.45; O[j].z += (p.z - O[j].z) * 0.45; O[j].y = p.y; }
       }
       // write segment instances in weapon space
       for (let j = 1; j <= SEG; j++) {

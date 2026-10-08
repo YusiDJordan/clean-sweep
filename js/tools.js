@@ -223,8 +223,23 @@ function placeBarrow(axle, yaw, pitch) {
 }
 export function parkBarrow() {
   const c = G.cart, b = G.barrow; if (!b || !c) return;
+  if (b.spot) { placeBarrow(b.spot.axle, b.spot.yaw, 0); return; } // (left wherever he let go of it)
   const spot = new THREE.Vector3(1.15, 0, 1.25).applyAxisAngle(_yv, c.rotation.y).add(c.position); // beside the cart
   placeBarrow(spot.setY(B_AXLE.y), c.rotation.y + Math.PI * 0.25, 0);
+}
+// let go of the barrow: it's set down right where it is (or beside the cart, if he's at the cart)
+export function releaseBarrow(atCart) {
+  const b = G.barrow; if (!b) return;
+  if (atCart) { b.spot = null; return; }
+  const g = b.group; g.updateMatrixWorld(true);
+  const f = new THREE.Vector3(0, 0, 1).applyQuaternion(g.quaternion);
+  b.spot = { axle: B_AXLE.clone().applyMatrix4(g.matrixWorld).setY(B_AXLE.y), yaw: Math.atan2(f.x, f.z) };
+}
+// where to stand to take it again (its grips), and whether he's close enough
+export function nearBarrow(pos, r = 1.6) {
+  const b = G.barrow; if (!b) return false;
+  const p = B_GRIP.clone().applyMatrix4(b.group.matrixWorld);
+  return Math.hypot(pos.x - p.x, pos.z - p.z) < r;
 }
 // pushed: grips at his hands' height just in front of him, the wheel rolling ahead
 // pushed: place it so its grips (midpoint) are at `grip` (world), facing `yaw`; the wheel stays on the floor

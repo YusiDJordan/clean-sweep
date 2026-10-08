@@ -370,11 +370,15 @@ export function wipeDecals(x, z, r, strength, kind = 0) {
 export function polishAt(x, z, r, strength) {
   if (!DECALS.rctx) return;
   const rx = DECALS.rctx, [px, py] = toMask(x, z), rr = r * MPX, a = Math.min(1, strength);
+  wipeDecals(x, z, r, strength, 2);
+  // (only where the floor is actually dull: otherwise the polish texture would be re-sent to the GPU for nothing)
+  const x0 = Math.max(0, px - rr | 0), y0 = Math.max(0, py - rr | 0), w = Math.min(DECALS.W - x0, Math.ceil(2 * rr)), h = Math.min(DECALS.H - y0, Math.ceil(2 * rr));
+  if (w <= 0 || h <= 0) return;
+  { const d = rx.getImageData(x0, y0, w, h).data; let any = false; for (let i = 0; i < d.length; i += 8) if (d[i] > 2) { any = true; break; } if (!any) return; }
   const g = rx.createRadialGradient(px, py, 0, px, py, rr);
   g.addColorStop(0, `rgba(0,0,0,${a})`); g.addColorStop(0.7, `rgba(0,0,0,${a * 0.7})`); g.addColorStop(1, 'rgba(0,0,0,0)');
   rx.fillStyle = g; rx.beginPath(); rx.arc(px, py, rr, 0, 6.2832); rx.fill();
   DECALS.roughDirty = true;
-  wipeDecals(x, z, r, strength, 2);
 }
 export function dullToPolish(x, z, r) {
   if (!DECALS.rctx) return false;
@@ -499,6 +503,20 @@ export function roughIn(r, thr = 0) {
   if (thr > 0) { const k = thr * 255; for (let i = 0; i < d.length; i += 8) if (d[i] > k) t += 255; }
   else for (let i = 0; i < d.length; i += 8) t += d[i];
   return t * 2 / 255 / (MPX * MPX);
+}
+// the dull floor in a rectangle as a coarse grid (one read of the mask): cell centres with the share still dull
+export function roughCells(r, cell = 0.7, thr = 0.2) {
+  if (!DECALS.rctx) return [];
+  const [x0, y0] = toMask(r.x0, r.z0), [x1, y1] = toMask(r.x1, r.z1);
+  const a = Math.max(0, x0 | 0), b = Math.max(0, y0 | 0), w = Math.min(DECALS.W, x1 | 0) - a, h = Math.min(DECALS.H, y1 | 0) - b;
+  if (w <= 0 || h <= 0) return [];
+  const d = DECALS.rctx.getImageData(a, b, w, h).data, cp = Math.max(2, cell * MPX | 0), k = thr * 255, out = [];
+  for (let cy = 0; cy < h; cy += cp) for (let cx = 0; cx < w; cx += cp) {
+    let n = 0, t = 0;
+    for (let y = cy; y < Math.min(h, cy + cp); y += 2) for (let x = cx; x < Math.min(w, cx + cp); x += 2) { t++; if (d[(y * w + x) * 4] > k) n++; }
+    out.push({ x: G.bounds.minX + (a + cx + cp / 2) / MPX, z: G.bounds.minZ + (b + cy + cp / 2) / MPX, f: n / t });
+  }
+  return out;
 }
 // fade the dull out of a rectangle a little (the last of it buffed away at once)
 export function fadeDull(r, a) {
