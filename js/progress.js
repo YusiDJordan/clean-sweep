@@ -44,9 +44,10 @@ export function buy(id) {
 }
 // upgrade points earned for a finished level
 export function pointsFor(run) {
-  const base = 60, ko = run.kos * 25, combo = run.maxCombo * 4, perfect = run.perfect * 10, clean = Math.round(run.clean * 2.5);
-  const docked = Math.round(run.damage / 40);
-  const total = Math.max(40, base + ko + combo + perfect + clean - docked);
+  const X = 1.25; // (points multiplier: every part of the score, so the breakdown still adds up)
+  const base = Math.round(60 * X), ko = Math.round(run.kos * 25 * X), combo = Math.round(run.maxCombo * 4 * X), perfect = Math.round(run.perfect * 10 * X), clean = Math.round(run.clean * 2.5 * X);
+  const docked = Math.round(run.damage / 40 * X);
+  const total = Math.max(Math.round(40 * X), base + ko + combo + perfect + clean - docked);
   return { base, ko, combo, perfect, clean, docked, total };
 }
 export function bank(amount, score) { P.points += amount; P.runs++; P.best = Math.max(P.best, score | 0); saveProgress(); }

@@ -87,6 +87,7 @@ const COMBO_SEQ = ['swingR', 'swingL', 'jab', 'swingR', 'upper', 'swingL', 'slam
 // ================================= PLAYER =================================
 // the Mixamo dodge roll is a loop that starts mid-dive: play it from the standing frame before the dive,
 // through the roll, until he's back on his feet (seconds of clip), a little quicker than authored
+const DODGE_COST = 4.5; // (stamina per roll: 70% less than it was)
 const DODGE = { start: 0.9, span: 0.9, rate: 1.85 }; // straight into the dive (a quick roll)
 // tint an object's materials gold (its own copies, so other robbers / rifles keep theirs)
 export function goldTint(obj, a, good = true) {
@@ -105,7 +106,7 @@ const _m0 = new THREE.Vector3(), _g0 = new THREE.Vector3(), _g1 = new THREE.Vect
 // (the swing is stretched a little so the band is about 2 m wide), stamped every 12 cm along its path
 const MOP = { r: 0.55, swing: 2.0, back: 0.2, step: 0.12, clean: 0.35, polish: 0.3 };
 const HURT_GRACE = 1.0; // seconds of protection after taking a hit (shown by Karim flickering)
-let reticle = null;
+let reticle = null, danger = null;
 function makeReticle() {
   const c = document.createElement('canvas'); c.width = c.height = 256; const x = c.getContext('2d');
   x.strokeStyle = '#fff'; x.lineCap = 'round';
@@ -156,7 +157,7 @@ export class Player {
     this.pose = { c: V(), d: V(), tw: 0, ln: 0, pv: PIV, st: 0 };
     this.cleanPh = 0; this.squeakT = 0; this.wetness = 0;
     this.tools = attachTools(this.rig); this.tool = 'mop'; // mop / vacuum / polisher, swapped at the cart
-    this.energy = 150; this.maxEnergy = 150; this.energyIdle = 0; this.running = false; // (stamina: runs, rolls)
+    this.energy = 180; this.maxEnergy = 180; this.energyIdle = 0; this.running = false; // (stamina: runs, rolls)
     this.invuln = false;
     this.r = 0.38;
     this.spinRate = 0;
@@ -241,8 +242,8 @@ export class Player {
   tryDodge() {
     if (this.state === 'dodge' || this.state === 'dead' || this.state === 'special' || this.tool === 'barrow') return;
     if (this.state === 'attack' && this.phaseName === 'strike' && this.t < this.move.dur * this.move.hit - 0.02 && this.t > 0.05) { this.queued = 'dodge'; this.queueT = 0.25; return; }
-    if (this.energy < 15) { if (!this.tiredT || G.time - this.tiredT > 1) { floatText('Out of breath', this.pos.clone().setY(2.2), 'cost', 0.8); this.tiredT = G.time; } return; }
-    this.energy -= 15; this.energyIdle = 0;
+    if (this.energy < DODGE_COST) { if (!this.tiredT || G.time - this.tiredT > 1) { floatText('Out of breath', this.pos.clone().setY(2.2), 'cost', 0.8); this.tiredT = G.time; } return; }
+    this.energy -= DODGE_COST; this.energyIdle = 0;
     let dir = this.moveInput();
     if (dir.lengthSq() === 0) dir = V(Math.sin(this.yaw), 0, Math.cos(this.yaw)); // slide the way he's facing
     this.state = 'dodge'; this.t = 0; this.dodgeDir = dir; this.invuln = true; this.slid = new Set();
@@ -457,6 +458,7 @@ export class Player {
     }
     if (this.droppedMop) this.updateDroppedMop(dt);
     this.updateReticle(dt);
+    this.updateDanger(dt);
     // after a hit he can't be hurt again for a moment: he flickers until it runs out
     if (this.body && this.body.mesh) {
       const since = G.simTime - this.lastHurt, safe = since < HURT_GRACE && this.state !== 'dead';
@@ -597,6 +599,22 @@ export class Player {
         }
       }
     }
+  }
+  // someone's aiming at him: a red ring on the floor around him closes in as the shot gets nearer, and goes solid when
+  // it's time to roll
+  updateDanger(dt) {
+    if (!danger) {
+      danger = new THREE.Mesh(new THREE.RingGeometry(0.86, 1, 48), new THREE.MeshBasicMaterial({ color: new THREE.Color(2.4, 0.2, 0.12), transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false }));
+      danger.rotation.x = -Math.PI / 2; danger.userData.noAO = true; danger.userData.noReflect = true; G.scene.add(danger);
+    }
+    let u = -1, locked = false;
+    for (const e of G.enemies) if (!e.ko && (e.state === 'aim' || (e.state === 'fire' && e.shots < 1)) && e.laser.visible) { const v = e.state === 'fire' ? 1 : (e.aimU || 0); if (v > u) { u = v; locked = e.state === 'fire' || e.glint.visible; } }
+    const on = u >= 0 && this.state !== 'dead';
+    this.dangerA = clamp((this.dangerA || 0) + (on ? dt * 10 : -dt * 6), 0, 1);
+    danger.visible = this.dangerA > 0.01; if (!danger.visible) return;
+    const k = on ? u : 1, r = 1.7 - 1.05 * k;
+    danger.position.set(this.pos.x, 0.035, this.pos.z); danger.scale.setScalar(r);
+    danger.material.opacity = this.dangerA * (locked ? (Math.sin(G.time * 50) > 0 ? 1 : 0.5) : 0.55);
   }
   // a faint reticle on the floor under the robber he's going for
   updateReticle(dt) {
@@ -868,12 +886,19 @@ export class Enemy {
     this.pose = { c: V(-0.12, 1.0, 0.25), d: V(0.25, -0.55, 0.8).normalize(), tw: 0, ln: 0, pv: PIV };
     this.lootT = rand(1, 4);
     if (!laserMat) {
-      laserMat = new THREE.MeshBasicMaterial({ color: 0xff2010, transparent: true, opacity: 0.85, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false });
+      laserMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(3.2, 0.35, 0.2), transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false });
       dotMat = new THREE.MeshBasicMaterial({ color: 0xff3020, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false, map: null });
       ringMat = new THREE.MeshBasicMaterial({ map: ringTex(), color: 0xffd040, transparent: true, depthWrite: false, toneMapped: false, blending: THREE.AdditiveBlending });
     }
-    const lg = new THREE.CylinderGeometry(0.0035, 0.0035, 1, 4, 1, true); lg.translate(0, 0.5, 0); lg.rotateX(Math.PI / 2);
+    const lg = new THREE.CylinderGeometry(0.008, 0.008, 1, 6, 1, true); lg.translate(0, 0.5, 0); lg.rotateX(Math.PI / 2);
     this.laser = new THREE.Mesh(lg, laserMat.clone()); this.laser.visible = false; this.laser.userData.noAO = true; this.laser.userData.noReflect = true; G.scene.add(this.laser);
+    { // a soft red glow around the beam, so it reads from the camera's height
+      const gg = new THREE.CylinderGeometry(0.045, 0.045, 1, 8, 1, true); gg.translate(0, 0.5, 0); gg.rotateX(Math.PI / 2);
+      this.laserGlow = new THREE.Mesh(gg, new THREE.MeshBasicMaterial({ color: 0xff1a08, transparent: true, opacity: 0.22, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false }));
+      this.laserGlow.userData.noAO = true; this.laser.add(this.laserGlow);
+      this.glint = new THREE.Mesh(new THREE.SphereGeometry(0.06, 10, 8), new THREE.MeshBasicMaterial({ color: new THREE.Color(4, 0.6, 0.3), transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false }));
+      this.glint.userData.noAO = true; this.glint.visible = false; G.scene.add(this.glint);
+    }
     this.dot = new THREE.Mesh(new THREE.SphereGeometry(0.018, 8, 6), dotMat); this.dot.visible = false; this.dot.userData.noAO = true; G.scene.add(this.dot);
     this.ring = new THREE.Mesh(new THREE.PlaneGeometry(1.6, 1.6), ringMat); this.ring.rotation.x = -Math.PI / 2; this.ring.position.y = 0.03; this.ring.visible = false; this.ring.userData.noAO = true; this.ring.userData.noReflect = true; G.scene.add(this.ring);
     this.aimDir = V(); this.bodyQ = new THREE.Quaternion(); this.lieQ = new THREE.Quaternion();
@@ -933,7 +958,7 @@ export class Enemy {
     if (k >= 1) { this.gone = true; root.visible = false; if (this.skin) this.skin.visible = false; SFX.play('collect'); }
   }
 
-  releaseToken() { G.attackers.delete(this); this.threatTime = null; this.laser.visible = false; this.dot.visible = false; }
+  releaseToken() { G.attackers.delete(this); this.threatTime = null; this.laser.visible = false; this.dot.visible = false; this.glint.visible = false; }
 
   stagger(dir, kb) {
     if (this.ko) return;
@@ -1063,12 +1088,14 @@ export class Enemy {
           const a0 = Math.atan2(this.aimDir.x, this.aimDir.z), a1 = Math.atan2(lead.x, lead.z);
           const na = a0 + clamp(angDiff(a0, a1), -3.2 * dt, 3.2 * dt);
           this.aimDir.set(Math.sin(na), 0, Math.cos(na));
-        } else if (!this.lockBeep) { this.lockBeep = true; SFX.play('aim'); }
+        } else if (!this.lockBeep) { this.lockBeep = true; SFX.play('aim'); if (P.state !== 'dodge') floatText('ROLL!', P.pos.clone().setY(2.3), 'cost', 0.6); }
         faceTo = this.aimDir;
         this.threatTime = AIM - this.t + 0.05;
         if (dist > 2.6 && !this.anim) want.copy(V(-dirP.z, 0, dirP.x)).multiplyScalar(this.strafeSign * 0.5); // (animated robbers plant their feet to aim)
-        this.updateLaser(locked, AIM - this.t <= 0.6); // the laser only lands on Karim in the last 0.6 s before the burst
-        if (this.t >= AIM) { this.state = 'fire'; this.t = 0; this.shots = 0; this.lockBeep = false; this.burstHurt = false; }
+        if (!this.aimBeep) { this.aimBeep = true; SFX.play('aim'); }
+        this.aimU = clamp(this.t / AIM, 0, 1);
+        this.updateLaser(locked, true); // (the laser is on him the whole time he aims: thin while tracking, fat and flashing once locked)
+        if (this.t >= AIM) { this.state = 'fire'; this.t = 0; this.shots = 0; this.lockBeep = false; this.aimBeep = false; this.burstHurt = false; this.aimU = 1; }
         break;
       }
       case 'fire': {
@@ -1225,7 +1252,7 @@ export class Enemy {
       dw.v.y -= 12 * dt; dw.w.position.addScaledVector(dw.v, dt); dw.w.rotation.x += dw.spin * dt;
       if (dw.w.position.y < 0.05) { dw.w.position.y = 0.05; dw.done = true; dw.w.rotation.set(Math.PI / 2, rand(0, 6), 0, 'YXZ'); addChair(dw.w, { r: 0.38, light: true, noTip: true, baseQ: dw.w.quaternion.clone(), y0: 0.05, rifle: true }); SFX.play('thud', 0.6); }
     }
-    if (this.ko) { this.laser.visible = false; this.dot.visible = false; }
+    if (this.ko) { this.laser.visible = false; this.dot.visible = false; this.glint.visible = false; }
   }
 
   // lift the whole body so no part of it pokes through the floor (head, chest, hips, hands, knees, feet)
@@ -1287,8 +1314,11 @@ export class Enemy {
     this.laser.position.copy(o); this.laser.scale.set(1, 1, L);
     this.laser.lookAt(o.clone().add(dir));
     this.dot.position.copy(o).addScaledVector(dir, L - 0.02);
-    const blink = locked ? (Math.sin(G.time * 60) > 0 ? 1 : 0.4) : 0.55;
-    this.laser.material.opacity = blink; this.laser.scale.x = this.laser.scale.y = locked ? 1.5 : 1;
+    const blink = locked ? (Math.sin(G.time * 60) > 0 ? 1 : 0.45) : 0.6;
+    this.laser.material.opacity = blink; this.laser.scale.x = this.laser.scale.y = locked ? 1.8 : 1;
+    this.laserGlow.material.opacity = (locked ? 0.4 : 0.18) * blink;
+    // a bright glint at the muzzle once he's locked on
+    this.glint.visible = show && locked; this.glint.position.copy(o); this.glint.scale.setScalar(0.8 + 0.4 * Math.sin(G.time * 40));
     this.shotDir = dir;
   }
 
