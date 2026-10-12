@@ -33,6 +33,12 @@ const FIT_BASEMENT = {
   MilkCrate: ['y', 0.3], FoldChairs: ['y', 0.88], MetalDesk: ['y', 0.76], Buckets: ['y', 0.5], DrainCleaner: ['y', 0.24], Plunger: ['y', 0.5], Grate: ['x', 0.6], FireBox: ['y', 1.45],
 };
 const LOBBY_SHARED = ['FireDoors', 'ExitSign'];
+// level 2 (Operations): Yusuf's office props, plus a few from the lobby and the basement
+const FIT_OPS = {
+  OpsTrolley: ['y', 0.88], ToiletStalls: ['x', 4.3], OpsChair: ['y', 1.12], MeetChair: ['y', 0.84], MeetTable: ['x', 3.0],
+  TVStand: ['y', 2.0], Whiteboard: ['y', 1.85], Cubicle: ['x', 3.0], OpsDesk: ['x', 1.6],
+};
+const OPS_SHARED = ['Bin', 'Printer', 'Shelf', 'LeatherChair', 'Bust', 'Ottoman', 'Fridge', 'Door'];
 L.dims = {};
 function fitModel(n, scene) {
   scene.updateMatrixWorld(true);
@@ -64,7 +70,7 @@ function fitModel(n, scene) {
 
 // ---------- model files, kept in the browser's cache storage so a reload (New game, the stairs) doesn't download
 // them all again; the other level's files are fetched quietly in the background while you play ----------
-const MODEL_CACHE = 'cleansweep-models-48'; // (bump this whenever anything in models/ changes)
+const MODEL_CACHE = 'cleansweep-models-52'; // (bump this whenever anything in models/ changes)
 let cacheP = null;
 function modelCache() {
   if (!cacheP) cacheP = (async () => {
@@ -87,6 +93,7 @@ async function fetchModel(path) {
 async function fetchJSON(path) { try { const r = await fetchModel(path); return r.ok ? await r.json() : null; } catch (e) { return null; } }
 // every file a level loads
 function levelFiles(level) {
+  if (level === 'ops') return { names: ['Cart', 'Computer', 'PottedPlant', 'SmallerPlantBox', 'PlantBox', 'Desk', 'Couch', 'CoffeeTable'], fits: [...Object.keys(FIT_OPS), ...OPS_SHARED], extra: ['MainChar', 'Karim', 'RobberRig'], json: ['Idle_Mop', 'Sweep_Mop', 'Dodge', 'RobberAnims'] };
   const base = level === 'basement';
   const names = base ? ['Cart', 'OfficeChair', 'PottedPlant'] : Object.keys(EXT);
   const fits = base ? ['Bin', 'Bench', ...Object.keys(FIT_BASEMENT)] : [...Object.keys(FIT).filter(n => !FIT_BASEMENT[n]), ...LOBBY_SHARED];
@@ -121,11 +128,12 @@ async function loadB64(loader, n) {
 
 export async function loadModels(onProgress, level = 'lobby') {
   const base = level === 'basement';
-  if (base) Object.assign(FIT, FIT_BASEMENT);
+  if (level === 'ops') Object.assign(FIT, FIT_OPS, { Fridge: FIT_BASEMENT.Fridge });
+  else if (base) Object.assign(FIT, FIT_BASEMENT);
   else for (const n of LOBBY_SHARED) FIT[n] = FIT_BASEMENT[n]; // (the stairwell door up from the basement)
   const loader = new GLTFLoader();
   // authored animations made in Blender (retargeted onto Karim's skeleton)
-  [L.idleMop, L.sweepMop, L.dodgeClip, L.robberAnims, L.titlePose] = await Promise.all(['Idle_Mop', 'Sweep_Mop', 'Dodge', 'RobberAnims', base ? null : 'TitlePose'].map(n => n ? fetchJSON(`models/${n}.json`) : null));
+  [L.idleMop, L.sweepMop, L.dodgeClip, L.robberAnims, L.titlePose] = await Promise.all(['Idle_Mop', 'Sweep_Mop', 'Dodge', 'RobberAnims', (base || level === 'ops') ? null : 'TitlePose'].map(n => n ? fetchJSON(`models/${n}.json`) : null));
   // (the basement only needs the cart, a chair, a bin and its own props)
   const { names, fits, extra } = levelFiles(level);
   let done = 0; const total = names.length + fits.length + extra.length;
@@ -193,16 +201,17 @@ export function prop2(name, x, z, yaw = 0, o = {}) {
   return { obj, w, h, d };
 }
 // a flat rug using the user's carpet texture (long side along z before yaw)
-function rug(x, z, wShort, dLong, yaw = 0) {
+export function rug(x, z, wShort, dLong, yaw = 0) {
   const g = new THREE.Group(); g.position.set(x, 0.003, z); g.rotation.y = yaw; G.scene.add(g);
+  (G.noDirt = G.noDirt || []).push(makeBox(x, z, wShort, dLong, yaw)); // (nothing to mop on a carpet)
   const m = new THREE.Mesh(new THREE.PlaneGeometry(wShort, dLong), new THREE.MeshStandardMaterial({ map: L.rugTex, roughness: 0.95, envMapIntensity: 0.35, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 }));
   m.rotation.x = -Math.PI / 2; m.receiveShadow = true; m.userData.noReflect = true; g.add(m);
   return g;
 }
 // light things you can kick about: bins (spill their rubbish when they go over) and ottoman stools
 export const BIN = (x, z) => { const p = prop2('Bin', x, z, Math.random() * 6, { contact: 0.4, col: false }); addChair(p.obj, { r: 0.2, light: true, tipForce: 2.5, tipAngle: Math.PI / 2, tipLift: 0.19, cost: 0, spill: true }); return p; };
-const STOOL = (x, z, yaw) => { const p = prop2('Ottoman', x, z, yaw, { contact: 0.45, col: false }); addChair(p.obj, { r: 0.3, light: true, tipForce: 4.5, tipAngle: Math.PI / 2, tipLift: 0.22, cost: 0 }); return p; };
-const PLANT = (x, z) => { const p = prop('PottedPlant', x, z, (Math.random() * 4 | 0) * Math.PI / 2); addDestructible({ kind: 'plant', obj: p.obj, box: collider(x, z, 0.45, 0.45, 0, 0, 0.95), cost: 180, name: 'Potted plant', h: p.h }); return p; };
+export const STOOL = (x, z, yaw) => { const p = prop2('Ottoman', x, z, yaw, { contact: 0.45, col: false }); addChair(p.obj, { r: 0.3, light: true, tipForce: 4.5, tipAngle: Math.PI / 2, tipLift: 0.22, cost: 0 }); return p; };
+export const PLANT = (x, z) => { const p = prop('PottedPlant', x, z, (Math.random() * 4 | 0) * Math.PI / 2); addDestructible({ kind: 'plant', obj: p.obj, box: collider(x, z, 0.45, 0.45, 0, 0, 0.95), cost: 180, name: 'Potted plant', h: p.h }); return p; };
 
 export function prop(name, x, z, yaw = 0, scale = 1, y = 0) {
   const s = SCALE[name] * scale;
@@ -228,8 +237,8 @@ export function mats() {
   M.darkMetal = new THREE.MeshStandardMaterial({ color: 0x2a2c30, roughness: 0.38, metalness: 0.85 });
   M.steel = new THREE.MeshStandardMaterial({ color: 0xc9c6c0, roughness: 0.28, metalness: 1, roughnessMap: brushedMetal(), envMapIntensity: 1.4 });
   M.gold = new THREE.MeshStandardMaterial({ color: 0xffc35a, roughness: 0.38, metalness: 1, envMapIntensity: 1.6 });
-  M.glass = new THREE.MeshStandardMaterial({ color: 0xb4d2ea, roughness: 0.012, metalness: 0.55, transparent: true, opacity: 0.3, envMapIntensity: 6.2, depthWrite: false, side: THREE.DoubleSide }); // a touch of blue, more mirror
-  M.facadeGlass = new THREE.MeshStandardMaterial({ color: 0x88a6bc, roughness: 0.05, metalness: 0.2, transparent: true, opacity: 0.22, envMapIntensity: 1.6, depthWrite: false, side: THREE.DoubleSide });
+  M.glass = new THREE.MeshStandardMaterial({ color: 0x7fb6ea, roughness: 0.01, metalness: 0.7, transparent: true, opacity: 0.4, envMapIntensity: 9, emissive: 0x0e3358, emissiveIntensity: 0.6, depthWrite: false, side: THREE.DoubleSide }); // clearly blue, strongly mirrored (so you can tell it's there)
+  M.facadeGlass = new THREE.MeshStandardMaterial({ color: 0x6f9fca, roughness: 0.04, metalness: 0.35, transparent: true, opacity: 0.28, envMapIntensity: 2.6, depthWrite: false, side: THREE.DoubleSide });
   M.wood = new THREE.MeshStandardMaterial({ color: 0x6b4a32, roughness: 0.45, metalness: 0, map: fabricTex('#7a5538', 'rgba(0,0,0,0.08)') });
   M.cap = new THREE.MeshStandardMaterial({ color: 0x1d1f23, roughness: 0.6 });
   M.ceiling = new THREE.MeshStandardMaterial({ color: 0xd8d2c8, roughness: 0.9 });
@@ -294,7 +303,7 @@ export function buildFloor(opts = {}) {
   // (a second floor in the same level shares the first one's uniforms: same dirt, polish mask, reflection; its own shine)
   const uniforms = opts.share ? { ...opts.share, reflStrength: { value: opts.refl ?? 1.3 } } : {
     tReflect: { value: R.reflRT.texture }, reflMatrix: { value: new THREE.Matrix4() }, reflStrength: { value: opts.refl ?? 1.3 },
-    tDirt: { value: FX.dirtTex }, tWet: { value: FX.wetTex }, tRough: { value: null }, uTool: GLOW.uTool, uClean: GLOW.uClean, uTime: GLOW.uTime, dirtRect: { value: new THREE.Vector4(B.minX, B.minZ, B.maxX - B.minX, B.maxZ - B.minZ) },
+    tDirt: { value: FX.dirtTex }, tWet: { value: FX.wetTex }, tRough: { value: null }, uTool: GLOW.uTool, uClean: GLOW.uClean, uTime: GLOW.uTime, dirtRect: { value: new THREE.Vector4(B.minX, B.minZ, B.maxX - B.minX, B.maxZ - B.minZ) }, uWorn: { value: 1 },
   };
   mat.userData.uniforms = uniforms;
   mat.onBeforeCompile = sh => {
@@ -303,7 +312,7 @@ export function buildFloor(opts = {}) {
       .replace('#include <common>', '#include <common>\nuniform mat4 reflMatrix; varying vec4 vReflUv; varying vec3 vWPos;')
       .replace('#include <project_vertex>', '#include <project_vertex>\nvWPos=(modelMatrix*vec4(transformed,1.0)).xyz; vReflUv=reflMatrix*vec4(vWPos,1.0);');
     sh.fragmentShader = sh.fragmentShader
-      .replace('#include <common>', '#include <common>\nuniform sampler2D tReflect; uniform sampler2D tDirt; uniform sampler2D tWet; uniform sampler2D tRough; uniform float uTool; uniform vec4 dirtRect; uniform float reflStrength; uniform vec4 uClean; uniform float uTime; varying vec4 vReflUv; varying vec3 vWPos;' + GOLD_GLSL)
+      .replace('#include <common>', '#include <common>\nuniform sampler2D tReflect; uniform sampler2D tDirt; uniform sampler2D tWet; uniform sampler2D tRough; uniform float uTool; uniform vec4 dirtRect; uniform float uWorn; uniform float reflStrength; uniform vec4 uClean; uniform float uTime; varying vec4 vReflUv; varying vec3 vWPos;' + GOLD_GLSL)
       .replace('#include <map_fragment>', `#include <map_fragment>
         vec2 duv=(vWPos.xz-dirtRect.xy)/dirtRect.zw; vec4 dirt=texture2D(tDirt,duv); dirt.a=min(1.0,dirt.a*1.3); // smudges read a little stronger
         diffuseColor.rgb=mix(diffuseColor.rgb,dirt.rgb,dirt.a);
@@ -311,12 +320,12 @@ export function buildFloor(opts = {}) {
         diffuseColor.rgb=mix(diffuseColor.rgb,wet.rgb,wet.a);
         // worn polish: a faint milky haze where the shine has gone
         float rough=texture2D(tRough,duv).r;
-        rough=smoothstep(0.08,0.6,rough); // worn floor is properly dull; buffed floor fully shiny
+        rough=smoothstep(0.08,0.6,rough*uWorn); // worn floor is properly dull; buffed floor fully shiny (uWorn: a level can make it read stronger)
         { vec2 sp=vWPos.xz*vec2(9.0,2.2); float sw=fract(sin(dot(floor(sp),vec2(127.1,311.7)))*43758.5453); rough*=0.88+0.12*sw; } // scuffed, uneven
         { // worn, dull wax: a duller, greyer, slightly darker surface with buffer swirls and scuffs in it
           vec2 q=vWPos.xz*11.0; float n1=fract(sin(dot(floor(q),vec2(12.9898,78.233)))*43758.5453);
           float sw=0.5+0.5*sin(length(fract(vWPos.xz*0.9)-0.5)*38.0+n1*2.0);
-          vec3 worn=diffuseColor.rgb*vec3(0.40,0.38,0.35)+vec3(0.03,0.026,0.02); // old, grimy wax: much darker than the polished stone
+          vec3 worn=diffuseColor.rgb*vec3(0.40,0.38,0.35)/uWorn+vec3(0.03,0.026,0.02); // old, grimy wax: much darker than the polished stone
           worn*=1.0-0.1*n1-0.07*sw;
           diffuseColor.rgb=mix(diffuseColor.rgb,worn,rough);
         }`)
@@ -342,7 +351,6 @@ export function buildFloor(opts = {}) {
         // gold: what the tool in hand can clean; red: what needs another tool (mop: prints, smudges, dull floor)
         float isMop = uTool < 0.5 ? 1.0 : 0.0, dA = smoothstep(0.05,0.55,dirt.a);
         outgoingLight=cleanGlow(outgoingLight,vWPos.xz,uClean,uTime,max(dA,rough*0.4)*isMop);
-        outgoingLight=sheenSweep(outgoingLight,vWPos.xz,uClean,uTime,rough*isMop*0.8); // (the mop buffs dull floor: a sheen sweeps over it)
         outgoingLight=wrongGlow(outgoingLight,vWPos.xz,uClean,uTime,max(dA,rough*0.45)*(1.0-isMop));
         #include <opaque_fragment>`);
   };
@@ -425,14 +433,14 @@ function buildArchitecture() {
     const up = plane(1.86, wallH - 3.2, M.facadeGlass, fx, 3.2 + (wallH - 3.2) / 2, z, Math.PI / 2); up.userData.noAO = true; up.castShadow = false;
     if (!door) { const lo = plane(1.86, 3.0, M.facadeGlass, fx, 1.55, z, Math.PI / 2); lo.userData.noAO = true; }
   }
-  // open entrance door leaves
+  // entrance door leaves, shut (they used to stand half-open at odd angles in the middle of the lobby)
   for (const [z, s] of [[7.05, 1], [10.95, -1]]) {
     const leaf = new THREE.Group();
-    leaf.position.set(fx, 0, z); leaf.rotation.y = s * 1.1;
+    leaf.position.set(fx + 0.04, 0, z); leaf.rotation.y = 0;
     G.scene.add(leaf);
-    const g = plane(1.0, 2.8, M.facadeGlass, 0, 1.45, 0.5 * s, Math.PI / 2, { parent: leaf }); g.userData.noAO = true;
-    box(0.05, 2.9, 0.05, M.darkMetal, 0, 1.45, 0.98 * s, { parent: leaf });
-    box(0.03, 0.9, 0.04, M.steel, 0.06, 1.1, 0.85 * s, { parent: leaf });
+    const g = plane(1.88, 2.8, M.facadeGlass, 0, 1.45, 0.95 * s, Math.PI / 2, { parent: leaf }); g.userData.noAO = true;
+    box(0.05, 2.9, 0.05, M.darkMetal, 0, 1.45, 1.9 * s, { parent: leaf });
+    box(0.03, 0.9, 0.04, M.steel, 0.06, 1.1, 1.72 * s, { parent: leaf });
   }
   collider(fx - 0.3, 0, 0.6, 30);
 
@@ -491,7 +499,7 @@ function buildArchitecture() {
       const t = r.from + len * (i + 0.5);
       const [x, z] = r.axis === 'x' ? [t, r.fixed] : [r.fixed, t];
       const yaw = r.axis === 'x' ? 0 : Math.PI / 2;
-      const mat = M.glass.clone(); mat.map = frostTex; mat.opacity = 0.32;
+      const mat = M.glass.clone(); mat.map = frostTex; mat.opacity = 0.42;
       const pane = new THREE.Mesh(new THREE.BoxGeometry(len - 0.08, 2.6, 0.02), mat);
       pane.position.set(x, 1.36, z); pane.rotation.y = yaw; pane.userData.noAO = true;
       pane.castShadow = false; pane.receiveShadow = false;
@@ -502,52 +510,7 @@ function buildArchitecture() {
   }
   // doorway headers already covered by top rail; add solid colliders for posts at doorways implicitly via panes
 
-  // Elevators: mirror doors recessed into the wall slide into pockets when Karim walks up; a lit cab waits behind
-  const mirror = new THREE.MeshStandardMaterial({ color: 0xe2e0dc, roughness: 0.07, metalness: 1, envMapIntensity: 1.8 });
-  const cabMirror = new THREE.MeshStandardMaterial({ color: 0xd8d6d2, roughness: 0.04, metalness: 1, envMapIntensity: 1.3 });
-  const cabSteel = new THREE.MeshStandardMaterial({ color: 0xbdb6aa, roughness: 0.3, metalness: 1, roughnessMap: M.steel.roughnessMap, envMapIntensity: 0.9 });
-  const cabFloor = new THREE.MeshStandardMaterial({ color: 0x8a8580, roughness: 0.3, map: M.stoneDark.map, envMapIntensity: 0.6 });
-  const brass = new THREE.MeshStandardMaterial({ color: 0xd7a85a, roughness: 0.25, metalness: 1, envMapIntensity: 1.3 });
-  const surround = M.stonePillar;
-  L.elevators = [];
-  for (const x of [-1.6, 1.6]) {
-    const D = 0.32, zf = B.minZ + D; // surround protrudes D from the wall
-    box(0.26, 3.05, D, surround, x - 0.93, 1.525, B.minZ + D / 2);
-    box(0.26, 3.05, D, surround, x + 0.93, 1.525, B.minZ + D / 2);
-    box(2.12, 0.55, D, surround, x, 3.32, B.minZ + D / 2);
-    box(1.62, 0.04, D + 0.5, M.darkMetal, x, 0.02, B.minZ + D / 2 - 0.25, { cast: false }); // sill through the wall
-    box(1.62, 0.26, 0.1, M.darkMetal, x, 2.91, B.minZ - 0.01); // door track / transom
-    // the two leaves, set 6 cm into the wall
-    const zd = B.minZ - 0.06;
-    const lw = box(0.8, 2.78, 0.05, mirror, x - 0.405, 1.39, zd), rw = box(0.8, 2.78, 0.05, mirror, x + 0.405, 1.39, zd);
-    // dark rubber seals on the meeting edges, proud of the leaf so no faces coincide (coplanar faces flickered as the doors slid)
-    box(0.006, 2.776, 0.054, M.darkMetal, 0.401, 0, 0, { parent: lw, cast: false }); // one seal, on the left leaf only
-    collider(x - 0.93, B.minZ + D / 2, 0.26, D); collider(x + 0.93, B.minZ + D / 2, 0.26, D);
-    const doorCol = collider(x, zd, 1.62, 0.14);
-    box(0.42, 0.3, 0.02, M.black, x, 3.32, zf + 0.01, { cast: false });
-    const ind = signTex(128, 96, '#0c0c0c', [{ text: 'L', size: 64, color: '#ff3b2e' }], { top: 22 });
-    plane(0.36, 0.27, new THREE.MeshBasicMaterial({ map: ind, toneMapped: false }), x, 3.32, zf + 0.022);
-    const callMat = new THREE.MeshBasicMaterial({ color: 0x5a3a20, toneMapped: false });
-    plane(0.1, 0.24, callMat, x + 0.93, 1.2, zf + 0.005);
-    // the cab, behind the wall (front at the wall's back face)
-    const c0 = B.minZ - 0.5, dep = 1.75, cz = c0 - dep / 2, cw = 1.9, ch = 2.72;
-    box(cw + 0.12, 0.06, dep + 0.02, cabFloor, x, -0.01, cz, { cast: false });
-    box(cw + 0.12, ch + 0.1, 0.06, cabSteel, x, ch / 2, c0 - dep - 0.03);
-    box(cw - 0.5, 1.35, 0.02, cabMirror, x, 1.62, c0 - dep + 0.01, { cast: false });
-    for (const sx of [-1, 1]) {
-      box(0.06, ch + 0.1, dep, cabSteel, x + sx * (cw / 2 + 0.03), ch / 2, cz);
-      box(0.012, ch, 0.012, M.darkMetal, x + sx * (cw / 2 - 0.004), ch / 2, cz, { cast: false }); // panel seam
-      const rail = box(0.035, 0.035, dep - 0.3, brass, x + sx * (cw / 2 - 0.06), 0.92, cz, { cast: false });
-    }
-    box(cw - 0.3, 0.035, 0.035, brass, x, 0.92, c0 - dep + 0.07, { cast: false });
-    box(cw + 0.12, 0.06, dep + 0.02, M.darkMetal, x, ch + 0.03, cz);
-    plane(cw - 0.45, dep - 0.45, new THREE.MeshBasicMaterial({ color: 0xc8bba8, toneMapped: false }), x, ch - 0.002, cz, 0, { rx: Math.PI / 2 });
-    // button panel on the side wall
-    box(0.02, 0.5, 0.16, M.darkMetal, x + cw / 2 - 0.01, 1.25, c0 - 0.3, { cast: false });
-    const light = new THREE.PointLight(0xffe8cc, 0, 5, 2); light.position.set(x, ch - 0.35, cz); G.scene.add(light);
-    collider(x - (cw / 2 + 0.03), cz, 0.14, dep + 0.2); collider(x + (cw / 2 + 0.03), cz, 0.14, dep + 0.2); collider(x, c0 - dep - 0.03, cw + 0.3, 0.14);
-    L.elevators.push({ x, l: lw, r: rw, col: doorCol, light, call: callMat, cabZ: cz, open: 0, chime: false });
-  }
+  elevatorBank([-1.6, 1.6], 'L');
   // Bank name over the elevators: halo-lit brass letters, the noon emblem above, the Arabic name below
   G.scene.add(buildNoonSign(0, 4.5, B.minZ + 0.02));
   // Directory sign
@@ -747,6 +710,56 @@ function buildArchitecture() {
   box(4, 0.15, 30, M.stoneLight, -20.2, 0.0, 0, { cast: false });
 }
 
+// Elevators: mirror doors recessed into the wall slide into pockets when Karim walks up; a lit cab waits behind
+export function elevatorBank(xs, label = 'L', H = 3.6) {
+  const M = L.mats, B = G.bounds;
+  const mirror = new THREE.MeshStandardMaterial({ color: 0xe2e0dc, roughness: 0.07, metalness: 1, envMapIntensity: 1.8 });
+  const cabMirror = new THREE.MeshStandardMaterial({ color: 0xd8d6d2, roughness: 0.04, metalness: 1, envMapIntensity: 1.3 });
+  const cabSteel = new THREE.MeshStandardMaterial({ color: 0xbdb6aa, roughness: 0.3, metalness: 1, roughnessMap: M.steel.roughnessMap, envMapIntensity: 0.9 });
+  const cabFloor = new THREE.MeshStandardMaterial({ color: 0x8a8580, roughness: 0.3, map: M.stoneDark.map, envMapIntensity: 0.6 });
+  const brass = new THREE.MeshStandardMaterial({ color: 0xd7a85a, roughness: 0.25, metalness: 1, envMapIntensity: 1.3 });
+  const surround = M.stonePillar;
+  L.elevators = [];
+  for (const x of xs) {
+    const D = 0.32, zf = B.minZ + D; // surround protrudes D from the wall
+    box(0.26, 3.05, D, surround, x - 0.93, 1.525, B.minZ + D / 2);
+    box(0.26, 3.05, D, surround, x + 0.93, 1.525, B.minZ + D / 2);
+    box(2.12, 0.55, D, surround, x, 3.32, B.minZ + D / 2);
+    box(1.62, 0.04, D + 0.5, M.darkMetal, x, 0.02, B.minZ + D / 2 - 0.25, { cast: false }); // sill through the wall
+    box(1.62, 0.26, 0.1, M.darkMetal, x, 2.91, B.minZ - 0.01); // door track / transom
+    // the two leaves, set 6 cm into the wall
+    const zd = B.minZ - 0.06;
+    const lw = box(0.8, 2.78, 0.05, mirror, x - 0.405, 1.39, zd), rw = box(0.8, 2.78, 0.05, mirror, x + 0.405, 1.39, zd);
+    // dark rubber seals on the meeting edges, proud of the leaf so no faces coincide (coplanar faces flickered as the doors slid)
+    box(0.006, 2.776, 0.054, M.darkMetal, 0.401, 0, 0, { parent: lw, cast: false }); // one seal, on the left leaf only
+    collider(x - 0.93, B.minZ + D / 2, 0.26, D); collider(x + 0.93, B.minZ + D / 2, 0.26, D);
+    const doorCol = collider(x, zd, 1.62, 0.14);
+    box(0.42, 0.3, 0.02, M.black, x, 3.32, zf + 0.01, { cast: false });
+    const ind = signTex(128, 96, '#0c0c0c', [{ text: label, size: 64, color: '#ff3b2e' }], { top: 22 });
+    plane(0.36, 0.27, new THREE.MeshBasicMaterial({ map: ind, toneMapped: false }), x, 3.32, zf + 0.022);
+    const callMat = new THREE.MeshBasicMaterial({ color: 0x5a3a20, toneMapped: false });
+    plane(0.1, 0.24, callMat, x + 0.93, 1.2, zf + 0.005);
+    // the cab, behind the wall (front at the wall's back face)
+    const c0 = B.minZ - 0.5, dep = 1.75, cz = c0 - dep / 2, cw = 1.9, ch = 2.72;
+    box(cw + 0.12, 0.06, dep + 0.02, cabFloor, x, -0.01, cz, { cast: false });
+    box(cw + 0.12, ch + 0.1, 0.06, cabSteel, x, ch / 2, c0 - dep - 0.03);
+    box(cw - 0.5, 1.35, 0.02, cabMirror, x, 1.62, c0 - dep + 0.01, { cast: false });
+    for (const sx of [-1, 1]) {
+      box(0.06, ch + 0.1, dep, cabSteel, x + sx * (cw / 2 + 0.03), ch / 2, cz);
+      box(0.012, ch, 0.012, M.darkMetal, x + sx * (cw / 2 - 0.004), ch / 2, cz, { cast: false }); // panel seam
+      const rail = box(0.035, 0.035, dep - 0.3, brass, x + sx * (cw / 2 - 0.06), 0.92, cz, { cast: false });
+    }
+    box(cw - 0.3, 0.035, 0.035, brass, x, 0.92, c0 - dep + 0.07, { cast: false });
+    box(cw + 0.12, 0.06, dep + 0.02, M.darkMetal, x, ch + 0.03, cz);
+    plane(cw - 0.45, dep - 0.45, new THREE.MeshBasicMaterial({ color: 0xc8bba8, toneMapped: false }), x, ch - 0.002, cz, 0, { rx: Math.PI / 2 });
+    // button panel on the side wall
+    box(0.02, 0.5, 0.16, M.darkMetal, x + cw / 2 - 0.01, 1.25, c0 - 0.3, { cast: false });
+    const light = new THREE.PointLight(0xffe8cc, 0, 5, 2); light.position.set(x, ch - 0.35, cz); G.scene.add(light);
+    collider(x - (cw / 2 + 0.03), cz, 0.14, dep + 0.2); collider(x + (cw / 2 + 0.03), cz, 0.14, dep + 0.2); collider(x, c0 - dep - 0.03, cw + 0.3, 0.14);
+    L.elevators.push({ x, l: lw, r: rw, col: doorCol, light, call: callMat, cabZ: cz, open: 0, chime: false });
+  }
+}
+
 function buildLights() {
   const scene = G.scene;
   const hemi = new THREE.HemisphereLight(0xb8c6e0, 0x7a6450, 0.7); scene.add(hemi);
@@ -915,7 +928,7 @@ export function updateElevators(dt) {
   for (const e of L.elevators) {
     const near = live && Math.abs(P.pos.x - e.x) < 1.5 && P.pos.z - z0 < 2.2 && P.hp > 0;
     let want = near ? 1 : 0;
-    if (G.leaving) want = G.leaving.e === e && G.leaving.phase !== 'close' && G.leaving.phase !== 'gone' ? 1 : 0;
+    if (G.leaving) want = G.leaving.e === e && (G.leaving.phase === 'walk' || G.leaving.phase === 'turn') ? 1 : 0;
     if (want && e.open === 0 && !e.chime) { e.chime = true; SFX.play('ding'); }
     if (!want && e.open === 0) e.chime = false;
     e.open = Math.min(1, Math.max(0, e.open + (want ? 1 : -1) * dt / 1.05));
@@ -983,7 +996,7 @@ function buildProps() {
   const B = G.bounds;
 
   // The custodian's cart at the entrance
-  const cart = G.fromStairs ? prop('Cart', -3.15, -10.2, Math.PI * 0.9) : prop('Cart', -15.0, 10.6, Math.PI / 2 + 0.3); // (up from the basement: waiting by the stairwell)
+  const cart = G.fromStairs ? prop('Cart', -7.0, -12.15, Math.PI) : prop('Cart', -15.0, 10.6, Math.PI / 2 + 0.3); // (up from the basement: waiting by the stairwell)
   addChair(cart.obj, { r: 0.62, heavy: true, noTip: true, mass: 2.2 }); // pushable, but it takes some shoving
   G.cart = cart.obj;
 
@@ -1101,14 +1114,19 @@ export function buildLevel() {
 }
 
 // Fade tall things that hide the player from the iso camera
-const _ray = new THREE.Raycaster();
+const _ray = new THREE.Raycaster(), _ot = new THREE.Vector3();
 export function updateOccluders() {
   if (!G.player) return;
-  const from = G.camera.position, to = G.player.pos.clone().setY(1.0);
-  const dir = to.clone().sub(from); const dist = dir.length(); dir.normalize();
-  _ray.set(from, dir); _ray.far = dist;
+  // (fade early: test sight lines to a ring of points around him too, so a pillar goes see-through as he nears it)
+  const from = G.camera.position, P = G.player.pos;
+  const pts = [[0, 0], [1.4, 0], [-1.4, 0], [0, 1.4], [0, -1.4], [1, 1], [-1, 1], [1, -1], [-1, -1]];
   for (const o of L.occluders) {
-    const hit = _ray.intersectObject(o, false).length > 0;
+    let hit = false;
+    for (const [ox, oz] of pts) {
+      const to = _ot.set(P.x + ox, 1.0, P.z + oz), dir = to.sub(from); const dist = dir.length(); dir.normalize();
+      _ray.set(from, dir); _ray.far = dist;
+      if (_ray.intersectObject(o, false).length > 0) { hit = true; break; }
+    }
     if (!o.userData.fadeMat) { o.userData.fadeMat = o.material.clone(); o.userData.fadeMat.transparent = true; o.userData.baseMat = o.material; }
     o.userData.fade = (o.userData.fade ?? 1) + ((hit ? 0.25 : 1) - (o.userData.fade ?? 1)) * 0.15;
     if (o.userData.fade < 0.98) { o.material = o.userData.fadeMat; o.material.opacity = o.userData.fade; o.castShadow = true; }

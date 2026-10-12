@@ -180,6 +180,7 @@ export function buildBasement() {
   const Wd = B0.maxX - B0.minX, Hd = B0.maxZ - B0.minZ, CX = (B0.minX + B0.maxX) / 2;
   const fA = buildFloor({ mat: M.concrete, hole: false, refl: 0.5, rect: { minX: RA.x0, maxX: RA.x1, minZ: B0.minZ, maxZ: B0.maxZ }, uv: (x, z) => [(x - RA.x0) / (RA.x1 - RA.x0), (z - B0.minZ) / Hd] });
   buildFloor({ mat: base.floor, hole: false, refl: 1.3, rect: { minX: HB.x0, maxX: HB.x1, minZ: B0.minZ, maxZ: B0.maxZ }, share: fA.uniforms });
+  fA.uniforms.uWorn.value = 1.8; // (the hall's worn patches as dark as the lobby's, under the bright basement lights)
 
   // ---- walls: tall at the back (north, west), cut low at the front so the camera sees in ----
   const H2 = WALL_H / 2, dz = BS.doors, door = { z0: 2.35, z1: 3.55 }, PZ = BS.gap;
@@ -446,9 +447,11 @@ function deskLamp(x, z) {
 // ---------------- the mess Karim walks in on ----------------
 export function seedBasementMess() {
   // muddy boots in from the corridor (the mop's job)
-  trail([[-7.4, 3.05], [-6.0, 2.85], [-4.6, 2.55], [-3.1, 2.05]], 0.95);
-  trail([[-7.4, 2.75], [-5.8, 3.25], [-4.2, 3.35], [-2.8, 3.0]], 0.8);
-  dirtBlob(-6.55, 3.0, 0.42, '74,56,38', 0.75, 1.4); dirtBlob(-5.3, 3.25, 0.3, '74,56,38', 0.55, 1.4);
+  // (dark, so it stands out on the grey concrete)
+  trail([[-7.4, 3.05], [-6.0, 2.85], [-4.6, 2.55], [-3.1, 2.05]], 1.0, '20,15,11');
+  trail([[-7.4, 2.75], [-5.8, 3.25], [-4.2, 3.35], [-2.8, 3.0]], 0.95, '20,15,11');
+  dirtBlob(-6.55, 3.0, 0.42, '34,25,17', 0.92, 1.4); dirtBlob(-5.3, 3.25, 0.3, '34,25,17', 0.8, 1.4);
+  if (DECALS.mesh) DECALS.mesh.material.color.setScalar(0.55); // (the grime decals darker too)
   addDecal('muddy', -6.1, 3.15, 0.85, Math.PI / 2, 1); addDecal('muddy', -4.9, 2.55, 0.8, Math.PI / 2 + 0.3, 0.9);
   addDecal('smear', -3.9, 3.0, 1.2, 0.5, 0.95); addDecal('heel', -3.4, 2.4, 0.6, 1.2, 0.9);
   // paper everywhere by the desk, a smashed bottle by the shelves, grit (the vacuum's job)

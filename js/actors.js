@@ -9,13 +9,14 @@ import { solveIK } from './rig.js';
 import { RobberAnim, robberAnimsReady, clipStride, placeRifle } from './robanim.js';
 import { attachTools, setTool, toolHead, flattenHead, nearCart, TOOL_ORDER, TOOL_LABEL, pushBarrow, barrowGrips, barrowSlot, barrowFront, loadRifle, updateBarrowHops, releaseBarrow, nearBarrow } from './tools.js';
 import { L } from './level.js';
+import { pathBlocked, flowDir } from './nav.js';
 import { blobTex, ringTex } from './textures.js';
 import { SFX } from './audio.js';
 import { hitDestructible, pushChairs, knockChair, chairs, addChair, suckChair } from './destruct.js';
 import { spark, flash, droplets, tracer, paperBurst, disturbPapers, collectAt, cleanAt, floatText, Trail, chunks, spawnPaper, bloodPool, bloodDrip , somethingToClean, vacuumAt, polishFloor, SUCKED } from './fx.js';
 
 const V = (x, y, z) => new THREE.Vector3(x, y, z);
-const _v1 = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vector3();
+const _v1 = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vector3(), _nav = new THREE.Vector3();
 const PIV = RIG.PIVOT;
 const ENEMY_SIZE = 0.75; // robbers are 25% smaller than the model's authored scale
 const RUN_CLIP = 3.75, STRIDE = 1.08; // run cycle ~24% slower than the raw sync, strides stretched just enough that the feet don't skate // run cycle plays ~28% slower than before; strides warped longer so the planted foot stays put
@@ -104,7 +105,7 @@ export function goldTint(obj, a, good = true) {
 const _m0 = new THREE.Vector3(), _g0 = new THREE.Vector3(), _g1 = new THREE.Vector3(), _s0 = new THREE.Vector3(), _o0 = new THREE.Vector3(), _p0 = new THREE.Vector3(), _f0 = new THREE.Vector3();
 // the mop cleans where its head actually swings: a 0.5 m patch that follows the head from side to side
 // (the swing is stretched a little so the band is about 2 m wide), stamped every 12 cm along its path
-const MOP = { r: 0.55, swing: 2.0, back: 0.2, step: 0.12, clean: 0.35, polish: 0.3 };
+const MOP = { r: 0.55, swing: 2.0, back: 0.2, step: 0.12, clean: 0.5, polish: 0.42 }; // (stronger strokes: the mop pulls its weight on the clean-up %)
 const HURT_GRACE = 1.0; // seconds of protection after taking a hit (shown by Karim flickering)
 let reticle = null, danger = null;
 function makeReticle() {
@@ -169,6 +170,7 @@ export class Player {
       if (!G.autoWalk) return V();
       const d = V(G.autoWalk.x - this.pos.x, 0, G.autoWalk.z - this.pos.z); return d.lengthSq() > 0.01 ? d.normalize() : V();
     }
+    if (G.cine) return V(); // (a scripted moment: he stands still)
     const inp = G.input; let f = 0, r = 0;
     if (inp.key('KeyW') || inp.key('ArrowUp')) f += 1; if (inp.key('KeyS') || inp.key('ArrowDown')) f -= 1;
     if (inp.key('KeyD') || inp.key('ArrowRight')) r += 1; if (inp.key('KeyA') || inp.key('ArrowLeft')) r -= 1;
@@ -208,8 +210,10 @@ export class Player {
 
   tryAttack() {
     if (this.tool !== 'mop') return; // only the mop is a weapon
+    if (G.tutAllow && !G.tutAllow.includes('attack')) return; // (tutorial: one move at a time)
     if (!(this.canAct() || this.cancelable())) { this.queued = 'attack'; this.queueT = 0.35; return; }
-    const target = this.pickTarget(this.prefDir(), G.ps.reach);
+    let target = this.pickTarget(this.prefDir(), G.ps.reach);
+    if (!target && G.tutAllow && G.tutTarget && !G.tutTarget.ko && G.tutTarget.pos.distanceTo(this.pos) < 3) target = G.tutTarget; // (tutorial: never whiff on the one robber, even tucked behind a plant)
     let name = COMBO_SEQ[this.seq++ % COMBO_SEQ.length];
     if (target) {
       const remaining = G.enemies.filter(e => !e.ko && e.aggro).length;
@@ -232,6 +236,7 @@ export class Player {
   }
   trySweep() {
     if (this.tool !== 'mop') return;
+    if (G.tutAllow && !G.tutAllow.includes('sweep')) return;
     if (!(this.canAct() || this.cancelable())) { this.queued = 'sweep'; this.queueT = 0.3; return; }
     this.state = 'sweep'; this.t = 0; this.kicked = false;
     // alternate a front kick and a spinning high kick
@@ -240,6 +245,7 @@ export class Player {
     if (!SFX.sample('kickCloth', 0.75, 1, 0.1)) SFX.play('whoosh', 1.1); // (the trousers snapping, hit or miss)
   }
   tryDodge() {
+    if (G.tutAllow && !G.tutAllow.includes('dodge')) return;
     if (this.state === 'dodge' || this.state === 'dead' || this.state === 'special' || this.tool === 'barrow') return;
     if (this.state === 'attack' && this.phaseName === 'strike' && this.t < this.move.dur * this.move.hit - 0.02 && this.t > 0.05) { this.queued = 'dodge'; this.queueT = 0.25; return; }
     if (this.energy < DODGE_COST) { if (!this.tiredT || G.time - this.tiredT > 1) { floatText('Out of breath', this.pos.clone().setY(2.2), 'cost', 0.8); this.tiredT = G.time; } return; }
@@ -259,16 +265,20 @@ export class Player {
     if (threat) SFX.sample('roll', 0.8, 1, 0.1);
     this.yawTarget = Math.atan2(dir.x, dir.z);
   }
-  trySpecial() {
-    if (this.tool !== 'mop') return;
-    if (G.specialCharges < 1 || !(this.canAct() || this.cancelable())) return;
-    const target = this.pickTarget(this.prefDir(), Math.min(3.5, G.ps.reach)); // close range only
-    if (!target) return;
+  trySpecial(chord = false) {
+    if (this.tool !== 'mop') return false;
+    if (G.tutAllow && !G.tutAllow.includes('special')) return false;
+    const justStarted = chord && (this.state === 'attack' || this.state === 'sweep') && this.t < 0.3 && !this.hitDone; // (the other mouse button of the pair already set off a swing)
+    if (G.specialCharges < 1 || !(this.canAct() || this.cancelable() || justStarted)) return false;
+    let target = this.pickTarget(this.prefDir(), Math.min(3.5, G.ps.reach)); // close range only
+    if (!target && G.introTarget && !G.introTarget.ko && G.introTarget.pos.distanceTo(this.pos) < 4) target = G.introTarget; // (the lobby's opening takedown)
+    if (!target) return false;
     G.specialCharges--; G.stats.specials++;
     this.state = 'special'; this.t = 0; this.target = target; this.hitDone = false;
     this.invuln = true; // nobody can interrupt a Mop Takedown
     G.slowmo(0.9, 0.3); G.cinematic = 1.0; SFX.play('special'); SFX.sample('swishSlomo', 0.8, 1, 0.3);
     floatText('MOP TAKEDOWN', target.pos.clone().setY(2.4), 'special', 1.2);
+    return true;
   }
 
   hurt(dmg, dir, src) {
@@ -310,11 +320,12 @@ export class Player {
         else if (!wantRun || this.energy <= 0) this.running = false;
         if (this.running) { this.energy = Math.max(0, this.energy - 24 * dt); this.energyIdle = 0; }
         this.cleaning = CLEAN.codes.some(c => G.input.key(c)) && !this.running && !G.leaving && !G.cine && this.tool !== 'barrow'; // hold C (browser) / Ctrl (desktop build) to clean
-        speedCap = G.ps.speed * (this.running ? RUN : this.cleaning ? 0.32 : WALK); // careful steps while he cleans (the strokes stay brisk)
+        speedCap = G.ps.speed * (this.running ? RUN : WALK); // (cleaning: same pace as his walk)
         want.copy(mi).multiplyScalar(speedCap);
         if (mi.lengthSq() > 0) faceDir = mi;
         else if (G.leaving) faceDir = V(0, 0, 1); // turn round to face the lobby as the doors close
-        else if (G.input.mouseActive && G.anyAggro()) { const d = _v1.copy(G.mouseGround).sub(this.pos).setY(0); if (d.lengthSq() > 1) faceDir = d.normalize().clone(); }
+        if (G.autoFace) { const d = V(G.autoFace.x - this.pos.x, 0, G.autoFace.z - this.pos.z); if (d.lengthSq() > 0.01) faceDir = d.normalize(); } // (a scripted moment: keep looking at someone)
+        else if (G.input.mouseActive && G.anyAggro() && !G.intro && !G.cine) { const d = _v1.copy(G.mouseGround).sub(this.pos).setY(0); if (d.lengthSq() > 1) faceDir = d.normalize().clone(); }
         const moving = mi.lengthSq() > 0 && this.vel.length() > 0.5;
         if (!this.cleaning || this.tool !== 'mop') this.wasMopping = false;
         if (this.cleaning) this.doClean(dt, pose);
@@ -505,7 +516,7 @@ export class Player {
     if (spd > 0.5) {
       loco.idle = 0;
       if (this.running || spd > G.ps.speed * 0.9) { loco.run = 1; loco.runTS = clamp(spd / RUN_CLIP, 0.8, 2.4); loco.stride = STRIDE; }
-      else { loco.walk = 1; loco.walkTS = clamp(spd / 1.53, 0.7, 2.3); }
+      else { loco.walk = 1; loco.walkTS = clamp(spd / 1.53, 0.7, 2.3); if (this.vel.x * Math.sin(this.yaw) + this.vel.z * Math.cos(this.yaw) < -0.4 * spd) loco.walkTS *= -1; } // (backing away: the walk plays in reverse)
     }
     // mopping (Ctrl): Yusuf's Blender sweep. Whole body when he stands still; torso + arms over the walk when he moves
     // (the vacuum and the polisher are always held down at the floor in that stance, ready to go)
@@ -608,7 +619,7 @@ export class Player {
       danger.rotation.x = -Math.PI / 2; danger.userData.noAO = true; danger.userData.noReflect = true; G.scene.add(danger);
     }
     let u = -1, locked = false;
-    for (const e of G.enemies) if (!e.ko && (e.state === 'aim' || (e.state === 'fire' && e.shots < 1)) && e.laser.visible) { const v = e.state === 'fire' ? 1 : (e.aimU || 0); if (v > u) { u = v; locked = e.state === 'fire' || e.glint.visible; } }
+    for (const e of G.enemies) if (!e.ko && !e.burstDodged && (e.state === 'aim' || (e.state === 'fire' && e.shots < 1)) && e.laser.visible) { const v = e.state === 'fire' ? 1 : (e.aimU || 0); if (v > u) { u = v; locked = e.state === 'fire' || e.glint.visible; } }
     const on = u >= 0 && this.state !== 'dead';
     this.dangerA = clamp((this.dangerA || 0) + (on ? dt * 10 : -dt * 6), 0, 1);
     danger.visible = this.dangerA > 0.01; if (!danger.visible) return;
@@ -643,9 +654,12 @@ export class Player {
     if (this.tool === 'barrow') {
       if (atCart && name !== 'barrow' && name !== 'next' && TOOL_ORDER.includes(name)) { releaseBarrow(true); return this.setToolNow(name); }
       releaseBarrow(atCart); SFX.play('thud', 0.5);
+      if (name === 'mop' || name === 'vacuum') return this.setToolNow(name); // (straight to the tool whose key he pressed)
       return this.setToolNow(this.prevTool && this.prevTool !== 'barrow' ? this.prevTool : 'mop');
     }
     if (name === 'barrow' && b && b.spot && nearBarrow(this.pos)) { this.prevTool = this.tool; return this.setToolNow('barrow'); }
+    if ((name === 'mop' || name === 'vacuum') && name !== this.tool) return this.setToolNow(name); // (mop and vacuum swap on the go)
+    if (name === 'next' && !atCart && (this.tool === 'mop' || this.tool === 'vacuum')) return this.setToolNow(this.tool === 'mop' ? 'vacuum' : 'mop');
     if (!atCart) return false;
     if (name === 'next') name = TOOL_ORDER[(TOOL_ORDER.indexOf(this.tool) + 1) % TOOL_ORDER.length];
     if (!TOOL_ORDER.includes(name) || name === this.tool) return false;
@@ -656,8 +670,9 @@ export class Player {
     return this.setToolNow(name);
   }
   setToolNow(name) {
-    this.tool = name; setTool(this.tools, name);
-    SFX.play('collect'); floatText(TOOL_LABEL[name].toUpperCase(), this.pos.clone().setY(2.2), 'onoma', 0.7);
+    this.toolT = G.time; this.tool = name; setTool(this.tools, name);
+    if (!SFX.sample({ mop: 'pickMop', vacuum: 'pickVacuum', barrow: 'pickBarrow' }[name], 0.9, 1, 0.1)) SFX.play('collect');
+    floatText(TOOL_LABEL[name].toUpperCase(), this.pos.clone().setY(2.2), 'onoma', 0.7);
     return true;
   }
   doClean(dt, pose) {
@@ -880,6 +895,7 @@ export class Enemy {
     this.hp = this.heavy ? 6 : 3; this.group = group; this.idleMode = opts.idle || 'guard';
     this.state = 'idle'; this.t = rand(0, 2); this.phase = rand(0, 6);
     this.aggro = false; this.down = false; this.ko = false; this.r = this.heavy ? 0.38 : 0.33;
+    this.role = opts.role || (this.heavy ? 'mover' : (G.roleN = (G.roleN || 0) + 1) % 3 === 0 ? 'brawler' : G.roleN % 3 === 1 ? 'planted' : 'mover');
     this.cool = rand(0.5, 2.5); this.strafeSign = Math.random() < 0.5 ? -1 : 1; this.strafeT = rand(1, 3);
     this.threatTime = null;
     this.home = V(x, 0, z);
@@ -905,7 +921,7 @@ export class Enemy {
   }
 
   alert(delay = 0) {
-    if (this.aggro || this.ko) return;
+    if (this.aggro || this.ko || this.tutHold) return; // (held back by a scripted scene)
     this.aggro = true; this.alertT = delay + rand(0.2, 0.6);
     if (this.state === 'idle') { this.state = 'alert'; this.t = 0; }
     G.onAlert && G.onAlert(this);
@@ -1056,10 +1072,17 @@ export class Enemy {
         setW([-0.14, 1.15, 0.28], [0.15, -0.35, 0.92]); pose.ln = 0.08; pose.tw = 0;
         this.cool -= dt; this.strafeT -= dt;
         if (this.strafeT <= 0) { this.strafeT = rand(1.2, 3); this.strafeSign *= -1; }
-        const ideal = this.tutIdeal ?? (this.heavy ? 3.5 : 5.5);
-        const radial = dist > ideal + 1.5 ? 1 : dist < ideal - 1.8 ? -0.6 : 0;
-        const tang = V(-dirP.z, 0, dirP.x).multiplyScalar(this.strafeSign * 0.8);
-        want.copy(dirP).multiplyScalar(radial).add(tang).normalize().multiplyScalar(dist > 10 ? 3.6 : 1.8);
+        // roles: brawlers close in to club him with the rifle butt, 'planted' gunmen stand their ground to shoot,
+        // the rest keep circling (and scripted robbers just keep their distance, no side-stepping)
+        const brawl = this.role === 'brawler' && !this.tutNoAttack;
+        const ideal = this.tutIdeal ?? (this.heavy ? 3.5 : brawl ? 1.7 : 5.5);
+        const radial = dist > ideal + (brawl ? 0.4 : 1.5) ? 1 : dist < ideal - (brawl ? 0.6 : 1.8) ? -0.6 : 0;
+        const still = this.tutIdeal != null || (this.role === 'planted' && dist < 13);
+        const tang = still || brawl ? V() : V(-dirP.z, 0, dirP.x).multiplyScalar(this.strafeSign * 0.8);
+        want.copy(dirP).multiplyScalar(radial).add(tang);
+        if (want.lengthSq() > 1e-4) want.normalize().multiplyScalar(dist > 10 ? 3.6 : brawl && radial > 0 ? 3.0 : 1.8);
+        // something in the way (a glass partition, desks)? walk round it instead of into it
+        if (dist > 1.6 && pathBlocked(this.pos.x, this.pos.z, P.pos.x, P.pos.z) && (radial > 0 || brawl || !this.hasLOS(P.pos)) && flowDir(this.pos.x, this.pos.z, _nav)) want.copy(_nav).multiplyScalar(dist > 10 ? 3.6 : 2.6);
         if (this.tutWalk) { // (the tutorial walks him in through the fire doors)
           const d = V(this.tutWalk.x - this.pos.x, 0, this.tutWalk.z - this.pos.z);
           if (d.length() < 0.4) this.tutWalk = null; else { want.copy(d).setLength(2.6); faceTo = want.clone(); }
@@ -1071,7 +1094,9 @@ export class Enemy {
           if (d < 2.0 && d > 0.01) { want.x += dx / d * (2 - d) * 2; want.z += dz / d * (2 - d) * 2; }
         }
         // request attack token from the director
-        if (this.cool <= 0 && !this.tutNoAttack && G.requestAttack(this)) {
+        // (only one robber takes aim at a time, with a breather after each burst)
+        const gunFree = dist < 2.6 ? true : (this.role === 'brawler' && dist < 8) ? false : (!G.enemies.some(o => o !== this && !o.ko && (o.state === 'aim' || o.state === 'fire')) && G.time - (G.lastBurstEnd ?? -9) > 1.4); // (brawlers would rather come and club him)
+        if (this.cool <= 0 && !this.tutNoAttack && gunFree && G.requestAttack(this)) {
           if (dist < 2.6) { this.state = 'melee'; this.t = 0; SFX.play('alert'); }
           else if (dist < 13 && this.hasLOS(P.pos)) { this.state = 'aim'; this.t = 0; this.aimDir.copy(dirP); this.burstDodged = false; SFX.play('aim'); }
           else G.attackers.delete(this);
@@ -1228,6 +1253,7 @@ export class Enemy {
       if (st === 'dying') { sel.Death = 1; sel.deathT = this.t; }
       else if (st === 'aim' || st === 'alert') sel.Shoot = 1;
       else if (st === 'fire') { sel.Shoot = 1; sel.shootPlay = true; }
+      else if (st === 'melee') { const t = this.t; sel.Butt1 = 1; sel.buttT = t < 0.45 ? t / 0.45 * 0.2 : t < 0.6 ? 0.2 + (t - 0.45) / 0.15 * 0.18 : 0.38 + (t - 0.6) * 0.62; } // (rifle-butt strike: a slow wind-up, then the smash lands at 0.6 s)
       else if (st === 'combat') {
         if (spd > 0.35) {
           const lv = _v2.copy(this.vel).applyAxisAngle(_UP, -this.yaw), unit = this.anim.k * this.size; // local: x = his left, z = ahead
@@ -1272,6 +1298,7 @@ export class Enemy {
   }
 
   endAttack() {
+    if (this.state === 'fire' || this.state === 'aim') G.lastBurstEnd = G.time;
     if (this.state === 'fire') this.lastBurst = { dodged: !!this.burstDodged, hurt: !!this.burstHurt, t: G.time };
     this.releaseToken(); this.state = 'combat'; this.t = 0; this.cool = this.heavy ? rand(1.2, 2.2) : rand(1.8, 3.6);
   }
@@ -1319,11 +1346,12 @@ export class Enemy {
     this.laserGlow.material.opacity = (locked ? 0.4 : 0.18) * blink;
     // a bright glint at the muzzle once he's locked on
     this.glint.visible = show && locked; this.glint.position.copy(o); this.glint.scale.setScalar(0.8 + 0.4 * Math.sin(G.time * 40));
+    if (this.burstDodged) this.laser.visible = this.dot.visible = this.glint.visible = false; // (he rolled out of this one: it's no threat any more)
     this.shotDir = dir;
   }
 
   // ray vs world: returns {t, type, ref}
-  castShot(o, d, maxT, probe = false) {
+  castShot(o, d, maxT, probe = false, missPlayer = false) {
     let best = { t: maxT, type: 'none' };
     for (const b of G.colliders) {
       if (!b.active || b.destructible) continue;
@@ -1335,7 +1363,7 @@ export class Enemy {
     }
     // player capsule
     const P = G.player;
-    const pt = rayCircle(o, d, P.pos, 0.42, 0, 1.85, best.t);
+    const pt = missPlayer ? -1 : rayCircle(o, d, P.pos, 0.42, 0, 1.85, best.t);
     if (pt >= 0 && pt < best.t) best = { t: pt, type: 'player' };
     if (!probe) for (const e of G.enemies) {
       if (e === this || e.ko || e.down) continue;
@@ -1351,7 +1379,12 @@ export class Enemy {
     const o = w.localToWorld(w.userData.muzzle.clone());
     const d = this.shotDir.clone();
     d.x += rand(-0.025, 0.025); d.z += rand(-0.025, 0.025); d.y += rand(-0.01, 0.01); d.normalize();
-    const hit = this.castShot(o, d, 30);
+    if (this.burstDodged) { // he rolled out of this burst: the shots crack past him, a good arm's length to the side
+      const P = G.player.pos, to = _v4.set(P.x - o.x, 0, P.z - o.z), side = this.missSide || (this.missSide = Math.random() < 0.5 ? -1 : 1);
+      const L = to.length() || 1, px = -to.z / L, pz = to.x / L, off = 0.85 + Math.random() * 0.35;
+      d.set(P.x + px * off * side - o.x, 1.1 + rand(-0.2, 0.25) - o.y, P.z + pz * off * side - o.z).normalize();
+    } else this.missSide = 0;
+    const hit = this.castShot(o, d, 30, false, this.burstDodged);
     const end = o.clone().addScaledVector(d, hit.t);
     tracer(o, end); flash(o.x, o.y, o.z, 0.9, 0xffc060, 0.05); SFX.play('gun', 0.8);
     G.muzzleLight(o);

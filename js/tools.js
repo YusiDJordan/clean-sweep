@@ -97,6 +97,20 @@ export function addMopPole(g, ML) {
     add(g, new THREE.CylinderGeometry(0.022, 0.021, 0.035, 12), POLE.black, 0, -ML / 2 + 0.012, 0), // end cap
   ];
 }
+// the handle's material follows the Mop Handle upgrade (plastic, aluminium, iron, titanium, platinum): every pole
+// shares the one material, so his mop, the cart's and the one in the elevator all change together
+const HANDLE_LOOK = [
+  { color: 0x1d62c8, roughness: 0.3, metalness: 0, env: 1.1, em: 0x000000 },   // plastic (blue)
+  { color: 0xb4b8be, roughness: 0.5, metalness: 0.9, env: 1.1, em: 0x000000 },  // aluminium (satin, brushed)
+  { color: 0x3c3a38, roughness: 0.7, metalness: 1, env: 0.8, em: 0x000000 },   // iron (dark, forged)
+  { color: 0x7a6ad0, roughness: 0.18, metalness: 1, env: 1.7, em: 0x0c0818 },   // titanium (anodised violet-blue)
+  { color: 0xf4f2ec, roughness: 0.05, metalness: 1, env: 2.4, em: 0x2a2820 },   // platinum (mirror-bright, a faint glow)
+];
+export function setMopHandle(tier) {
+  if (!POLE) addMopPole(new THREE.Group(), 1); // (make the shared materials)
+  const h = HANDLE_LOOK[Math.max(0, Math.min(HANDLE_LOOK.length - 1, tier | 0))], m = POLE.blue;
+  m.color.setHex(h.color); m.roughness = h.roughness; m.metalness = h.metalness; m.envMapIntensity = h.env; m.emissive.setHex(h.em); m.needsUpdate = true;
+}
 export function buildDisplayMop() {
   const M = mats(), g = new THREE.Group(); g.name = 'mop';
   addMopPole(g, 1.16);
@@ -185,7 +199,8 @@ export function buildWheelbarrow() {
   const paint = phys(0x2f6e3c, 0.45), tube = std(0x2b2d30, 0.45, 0.6);
   const tray = add(g, trayGeometry(), new THREE.MeshPhysicalMaterial({ color: 0x2f6e3c, roughness: 0.45, clearcoat: 0.6, side: THREE.DoubleSide }));
   // rim
-  const rim = (x0, z0, x1, z1) => { const L = Math.hypot(x1 - x0, z1 - z0); add(g, new THREE.CylinderGeometry(0.016, 0.016, L, 8), tube, (x0 + x1) / 2, 0.645, (z0 + z1) / 2, Math.PI / 2, Math.atan2(x1 - x0, z1 - z0), 0); };
+  // (each rim tube is turned to lie along its own edge: the front and back ones used to end up lengthways down the middle)
+  const rim = (x0, z0, x1, z1) => { const L = Math.hypot(x1 - x0, z1 - z0); const m = add(g, new THREE.CylinderGeometry(0.016, 0.016, L, 8), tube, (x0 + x1) / 2, 0.645, (z0 + z1) / 2); m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), new THREE.Vector3(x1 - x0, 0, z1 - z0).normalize()); };
   rim(-0.35, -0.38, 0.35, -0.38); rim(0.35, -0.38, 0.35, 0.5); rim(0.35, 0.5, -0.35, 0.5); rim(-0.35, 0.5, -0.35, -0.38);
   // frame rails running from the wheel fork back to the handles
   for (const sx of [-1, 1]) {

@@ -56,28 +56,25 @@ function emblemShapes(cx, cy, R) {
   return [ring, bowl, dot];
 }
 
-// "NOON BANK" in brass over the elevators, the noon emblem above, the Arabic name below.
+// "NOON BANK" in brass over the elevators, the noon emblem above.
 // Built facing +z, its English baseline centred on (x, y) on a wall at z.
 export function buildNoonSign(x, y, z, opts = {}) {
   const grp = new THREE.Group(); grp.position.set(x, y, z);
   const cap = opts.cap ?? 0.46, em = cap / 0.7275, R = cap * 1.2;
   const en = textShapes(LATIN, 'NOON BANK', em, cap * 0.24, 0, 0);
-  const arSize = cap * 1.15;
-  const ar = textShapes(ARABIC, 'ﻥﻮﻧ ﻚﻨﺑ', arSize, 0, 0, -cap * 1.05);
   const emY = cap + 0.22 * cap / 0.46 + R;
   const em3 = emblemShapes(0, emY, R);
   const ex = (shapes, depth, bevel, segs) => new THREE.ExtrudeGeometry(shapes, { depth, bevelEnabled: true, bevelThickness: bevel, bevelSize: bevel * 0.7, bevelSegments: 2, curveSegments: segs });
-  const geo = mergeGeometries([ex(en.shapes, 0.045, 0.008, 6), ex(ar.shapes, 0.035, 0.006, 5), ex(em3, 0.05, 0.008, 24)]);
+  const geo = mergeGeometries([ex(en.shapes, 0.045, 0.008, 6), ex(em3, 0.05, 0.008, 24)]); // (no Arabic line any more)
   geo.translate(0, 0, 0.05); // stand-offs: the letters float a little off the wall
   const brass = new THREE.MeshStandardMaterial({ color: 0xe6c070, metalness: 1, roughness: 0.24, envMapIntensity: 1.7, emissive: 0x4a3410, emissiveIntensity: 1 });
   const mesh = new THREE.Mesh(geo, brass); mesh.castShadow = true; mesh.receiveShadow = true; grp.add(mesh);
   // halo: a soft warm glow on the wall behind the letters (they're lit from behind)
-  const k = 150, pad = 0.35, W = Math.max(en.L.width, R * 2) + pad * 2, top = emY + R + pad, bot = -cap * 1.05 - arSize * 0.45 - pad;
+  const k = 150, pad = 0.35, W = Math.max(en.L.width, R * 2) + pad * 2, top = emY + R + pad, bot = -cap * 0.2 - pad;
   const Hh = top - bot, c = document.createElement('canvas'); c.width = Math.ceil(W * k); c.height = Math.ceil(Hh * k);
   const ctx = c.getContext('2d'), cx = c.width / 2, cy = top * k;
   ctx.filter = 'blur(' + Math.round(k * 0.05) + 'px)'; ctx.fillStyle = '#fff'; ctx.beginPath();
   for (const { g, x: gx } of en.L.glyphs) glyphPath2D(g, em, en.x0 + gx, 0, ctx, k, cx, cy);
-  for (const { g, x: gx } of ar.L.glyphs) glyphPath2D(g, arSize, ar.x0 + gx, -cap * 1.05, ctx, k, cx, cy);
   ctx.fill();
   ctx.beginPath(); ctx.arc(cx, cy - emY * k, R * k, 0, Math.PI * 2); ctx.arc(cx, cy - emY * k, R * 0.88 * k, 0, Math.PI * 2, true); ctx.fill();
   ctx.beginPath(); ctx.arc(cx, cy - (emY + R * 0.42) * k, R * 0.2 * k, 0, Math.PI * 2); ctx.fill();

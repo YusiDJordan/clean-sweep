@@ -69,7 +69,7 @@ export class RobberAnim {
     for (const n in PACK.clips) { const a = this.mixer.clipAction(PACK.clips[n]); a.play(); a.setEffectiveWeight(0); this.actions[n] = a; }
     for (const n of LOOPS) this.actions[n].setLoop(THREE.LoopRepeat);
     this.actions.Death.setLoop(THREE.LoopOnce); this.actions.Death.clampWhenFinished = true;
-    this.w = { Run: 0, Strafe: 0, Shoot: 0, Death: 0 }; this.W = 0;
+    this.w = { Run: 0, Strafe: 0, Shoot: 0, Death: 0 }; for (const n of ['Butt1', 'Butt2']) if (this.actions[n]) this.w[n] = 0; this.W = 0;
     this.C = { bodyP: new THREE.Vector3(), body: new THREE.Quaternion() };
     for (const j in PARENT) this.C[j] = new THREE.Quaternion();
     this.frozen = false;
@@ -96,7 +96,7 @@ export class RobberAnim {
     for (const k in this.joints) { this.joints[k].quaternion.copy(saved[k][0]); this.joints[k].position.copy(saved[k][1]); }
     root.position.copy(sp); root.quaternion.copy(sq); root.scale.copy(ss); root.updateMatrixWorld(true);
   }
-  // sel: { Run, Strafe, Shoot, Death } target weights, phaseRate (gait cycles/s), runDir/strafeDir (+1/-1), shootPlay, deathT
+  // sel: { Run, Strafe, Shoot, Death, Butt1/Butt2 } target weights (buttT: time into the rifle-butt strike), phaseRate (gait cycles/s), runDir/strafeDir (+1/-1), shootPlay, deathT
   update(dt, sel) {
     if (this.frozen) return this.C;
     const k = 1 - Math.exp(-10 * dt);
@@ -111,6 +111,7 @@ export class RobberAnim {
     for (const [n, dir] of [['Run', sel.runDir || 1], ['Strafe', sel.strafeDir || 1]]) { const a = this.actions[n]; a.timeScale = 0; a.time = fr(dir * this.ph) * PACK.clips[n].duration; }
     const sh = this.actions.Shoot; if (sel.shootPlay) sh.timeScale = 1; else { sh.timeScale = 0; sh.time = 0; }
     const de = this.actions.Death; de.timeScale = 0; de.time = Math.min(sel.deathT || 0, PACK.clips.Death.duration - 1e-3);
+    for (const n of ['Butt1', 'Butt2']) { const a = this.actions[n]; if (!a) continue; a.timeScale = 0; a.time = Math.min(sel.buttT || 0, PACK.clips[n].duration - 1e-3); } // (the rifle-butt strike, driven by the melee timer)
     this.mixer.update(dt);
     this.read();
     if (sel.Death && this.w.Death > 0.999 && (sel.deathT || 0) > PACK.clips.Death.duration + 0.5) this.frozen = true; // lying still: stop animating

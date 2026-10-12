@@ -1,7 +1,8 @@
 // Web Audio sound effects: Yusuf's recorded sounds (sfx/*.mp3: the vacuum sucking things up, the mop wiping, hitting
 // and swishing) plus procedural ones for everything else
 const SAMPLE_SETS = { suckPaper: ['SuckPaper', 9], suckGlass: ['SuckGlass', 5], suckLeaf: ['SuckLeaf', 5], hitMop: ['HitMop', 6], swish: ['Swish', 4], swishSlomo: ['SwishSlomo', 0], wipe: ['WipeFloor', 0], pickupBody: ['PickupBody', 4],
-  roll: ['RollDodge', 2], kickHit: ['KickHit', 0], kickCloth: ['KickCloth', 2], finisherHit: ['FinisherHitSloMo', 0] };
+  roll: ['RollDodge', 2], kickHit: ['KickHit', 0], kickCloth: ['KickCloth', 2], finisherHit: ['FinisherHitSloMo', 0],
+  pickMop: ['PickupMop', 0], pickVacuum: ['PickupVacuum', 0], pickBarrow: ['PickupBarrow', 0], frogJingle: ['PickupTreefrog', 0], upgrade: ['Upgrade', 0] };
 export const SFX = {
   ctx: null, master: null, muted: false, noise: null, last: {}, raw: {}, buf: {}, lastIdx: {}, loops: {},
   // fetch the sound files straight away (they're decoded once there's an audio context, after the first click)
@@ -122,6 +123,44 @@ export const SFX = {
     h.g.gain.setTargetAtTime(this.muted ? 0 : level * peak, t, 0.08);
     h.o.frequency.setTargetAtTime(h.base * (1 + load * 0.12), t, 0.15);
     h.fl.frequency.setTargetAtTime(h.fbase * (1 + load * 0.35), t, 0.15);
+  },
+  // elevator music: a soft bossa loop (electric piano chords, a walking bass, brushes), quiet under the menu
+  muzak(on) {
+    if (!this.ctx) return;
+    const c = this.ctx;
+    if (!this.mz) {
+      if (!on) return;
+      const out = c.createGain(); out.gain.value = 0; out.connect(this.master);
+      const lp = c.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 2600; lp.connect(out);
+      this.mz = { out, lp, next: c.currentTime + 0.1, step: 0, timer: null };
+    }
+    const M = this.mz;
+    M.out.gain.setTargetAtTime(on && !this.muted ? 0.5 : 0, c.currentTime, on ? 0.6 : 0.25);
+    if (on && !M.timer) M.timer = setInterval(() => this.muzakTick(), 90);
+    if (!on && M.timer) { clearInterval(M.timer); M.timer = null; }
+  },
+  muzakTick() {
+    const c = this.ctx, M = this.mz, beat = 60 / 92 / 2; // eighth notes at 92 bpm
+    // Fmaj9 - Em7 - Dm9 - G13 (two bars each)
+    const CH = [[53, 57, 60, 64, 67], [52, 55, 59, 62, 64], [50, 53, 57, 60, 64], [43, 53, 57, 59, 64]], BASS = [41, 40, 38, 43];
+    const hz = m => 440 * Math.pow(2, (m - 69) / 12);
+    const ep = (t, f, v, d) => { // electric piano: a sine with a little bell on top
+      const o = c.createOscillator(), o2 = c.createOscillator(), g = c.createGain(), g2 = c.createGain();
+      o.type = 'sine'; o.frequency.value = f; o2.type = 'sine'; o2.frequency.value = f * 4.01;
+      g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(v, t + 0.012); g.gain.exponentialRampToValueAtTime(0.0001, t + d);
+      g2.gain.setValueAtTime(v * 0.18, t); g2.gain.exponentialRampToValueAtTime(0.0001, t + 0.25);
+      o.connect(g); o2.connect(g2); g.connect(M.lp); g2.connect(M.lp); o.start(t); o2.start(t); o.stop(t + d + 0.05); o2.stop(t + 0.3);
+    };
+    while (M.next < c.currentTime + 0.4) {
+      const t = M.next, s = M.step, bar = (s >> 3) % 8, ch = CH[bar >> 1], e = s % 8;
+      if (e === 0 || e === 3 || e === 6) for (const m of ch.slice(1)) ep(t, hz(m + 12), e === 0 ? 0.035 : 0.022, e === 0 ? 1.4 : 0.6); // bossa comping
+      if (e === 0 || e === 4 || e === 7) { const b = BASS[bar >> 1] + (e === 4 ? 7 : e === 7 ? 5 : 0); this.tone(t, { f: hz(b), f2: hz(b), type: 'triangle', peak: 0.11, a: 0.01, dec: 0.45 }); }
+      // brushes
+      this.noiseHit(t, { f: 7000, q: 0.7, type: 'bandpass', peak: e % 2 ? 0.012 : 0.022, a: 0.004, dec: 0.08 });
+      // a lazy melody now and then
+      if ((e === 2 || e === 5) && Math.random() < 0.45) { const sc = [72, 74, 76, 79, 81, 84]; ep(t, hz(sc[Math.random() * sc.length | 0]), 0.03, 0.9); }
+      M.next += beat; M.step++;
+    }
   },
   startAmbience() {
     // soft lobby room tone + distant hum

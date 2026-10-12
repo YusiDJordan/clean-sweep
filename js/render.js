@@ -273,12 +273,20 @@ export function updateCamera(dt) {
   if (R.fov0) { G.camera.fov = R.fov0; R.fov0 = 0; G.camera.updateProjectionMatrix(); }
   // leaving: swing round to face the elevator so we see Karim turn and the doors close on him
   if (G.leaving) {
-    const e = G.leaving.e, z0 = G.bounds.minZ, k = 1 - Math.exp(-(G.leaving.phase === 'close' ? 1.6 : 2.4) * dt);
-    _lv.set(e.x + 0.9, 2.4, z0 + 5.4); _lt.set(e.x, 1.2, z0 - 1.1);
-    // as the doors close, ease back and tilt up to the bank's name over the elevators
-    if (G.leaving.phase === 'close' || G.leaving.phase === 'gone') { _lv.set(e.x * 0.4 + 0.6, 2.0, z0 + 9.5); _lt.set(e.x * 0.3, 4.0, z0); }
+    const L0 = G.leaving, e = L0.e, z0 = G.bounds.minZ;
     if (!R.leaveLook) R.leaveLook = R.camTarget.clone();
-    G.camera.position.lerp(_lv, k); R.leaveLook.lerp(_lt, k);
+    if (L0.phase === 'walk' || L0.phase === 'turn' || L0.phase === 'close') { // on Karim in the cab, while the doors close on him
+      const k = 1 - Math.exp(-2.4 * dt);
+      _lv.set(e.x + 0.9, 2.4, z0 + 5.4); _lt.set(e.x, 1.2, z0 - 1.1);
+      G.camera.position.lerp(_lv, k); R.leaveLook.lerp(_lt, k); R.leave0 = null;
+    } else { // then a slow ease-in-out up to the bank's name over the elevators (and on, gently, while it fades out)
+      if (!R.leave0) R.leave0 = [G.camera.position.clone(), R.leaveLook.clone()];
+      const u = L0.phase === 'pan' ? Math.min(1, L0.t / 3.0) : 1, k = u * u * u * (u * (u * 6 - 15) + 10);
+      const xv = G.exitView || { pos: [0, 3.1, 8.2], look: [0, 4.95, 0] }; // (each level eases in on its own name over the lifts)
+      _lv.set(xv.pos[0], xv.pos[1], z0 + xv.pos[2]); _lt.set(xv.look[0], xv.look[1], z0 + xv.look[2]);
+      G.camera.position.lerpVectors(R.leave0[0], _lv, k); R.leaveLook.lerpVectors(R.leave0[1], _lt, k);
+      if (L0.phase !== 'pan') G.camera.position.z -= Math.min(1, L0.t) * 0.5;
+    }
     G.camera.lookAt(R.leaveLook); G.camera.updateMatrixWorld(); return;
   }
   const want = (G.camHold || p.pos).clone(); // (camHold: the camera waits somewhere, e.g. for him to come through a door)
@@ -314,7 +322,7 @@ export function renderFrame(title) {
     // the title's white studio: same post chain, minus AO and bloom (the white would bloom over him), lighter vignette
     if (!title.scene.environment) title.scene.environment = G.scene.environment;
     R.renderPass.scene = title.scene; R.renderPass.camera = title.cam;
-    if (R.gtao) R.gtao.enabled = false; R.bloom.enabled = false; R.grade.uniforms.vig.value = 0.12;
+    if (R.gtao) R.gtao.enabled = false; R.bloom.enabled = !!title.bloom && GFX.bloom !== 'off'; R.grade.uniforms.vig.value = title.vig ?? 0.12;
     R.composer.render();
     R.renderPass.scene = G.scene; R.renderPass.camera = G.camera;
     if (R.gtao) R.gtao.enabled = true; R.bloom.enabled = GFX.bloom !== 'off'; R.grade.uniforms.vig.value = 0.35;

@@ -266,10 +266,11 @@ export const GOLD_GLSL = `
   vec3 cleanGlow(vec3 col, vec2 wp, vec4 cl, float t, float amt) {
     float cd = length(wp - cl.xy), cf = cl.w * smoothstep(cl.z, cl.z * 0.35, cd) * amt;
     if (cf <= 0.0) return col;
-    float pulse = 0.85 + 0.15 * sin(t * 5.0 - cd * 3.0);
-    // polished gold, like the arrow over his head: tint what's left to clean a deep, shining gold
-    vec3 gold = vec3(1.0, 0.68, 0.14) * (0.95 + 0.6 * pulse) * (0.75 + 0.5 * dot(col, vec3(0.3, 0.5, 0.2)));
-    return mix(col, gold, clamp(cf * 1.15, 0.0, 0.92));
+    // what's left to clean isn't painted gold any more: it lifts a little and catches bright rings of light that
+    // radiate out from Karim (so the mess keeps its own colours and you can see where it is)
+    float wave = pow(0.5 + 0.5 * sin(t * 5.0 - cd * 3.0), 5.0);
+    vec3 warm = vec3(1.0, 0.78, 0.42);
+    return col * (1.0 + 0.25 * cf) + warm * (0.06 + 0.55 * wave) * clamp(cf, 0.0, 1.0) * (0.5 + 0.5 * dot(col, vec3(0.3, 0.5, 0.2)) + 0.25);
   }
   // (experiment) what the tool in hand CAN'T clean glows a dull red
   vec3 wrongGlow(vec3 col, vec2 wp, vec4 cl, float t, float amt) {
@@ -277,7 +278,7 @@ export const GOLD_GLSL = `
     if (cf <= 0.0) return col;
     float pulse = 0.85 + 0.15 * sin(t * 5.0 - cd * 3.0);
     vec3 red = vec3(0.95, 0.13, 0.07) * (0.7 + 0.5 * pulse) * (0.7 + 0.5 * dot(col, vec3(0.3, 0.5, 0.2)));
-    return mix(col, red, clamp(cf * 0.6, 0.0, 0.45));
+    return mix(col, red, clamp(cf * 0.95, 0.0, 0.72)); // (clearly red: "not with this tool")
   }
   // polisher: a band of golden light sweeps across the dull floor about once a second (a reflection gliding over it)
   vec3 sheenSweep(vec3 col, vec2 wp, vec4 cl, float t, float amt) {
@@ -345,13 +346,18 @@ export function addDecal(type, x, z, size, yaw = Math.random() * 6.2832, opacity
   _m.compose(_p.set(x, 0.0035 + i * 0.000004, z), _q.setFromAxisAngle(_up, yaw), _s.set(sx, 1, sz)); M.setMatrixAt(i, _m); M.instanceMatrix.needsUpdate = true;
   DECALS.aCell.setXYZW(i, (cell % N) / N, 1 - ((cell / N | 0) + 1) / N, 1 / N, opacity); DECALS.aCell.needsUpdate = true;
   const kind = KIND[type] ?? 0; DECALS.aKind.setX(i, kind); DECALS.aKind.needsUpdate = true;
-  const d = { x, z, sx, sz, yaw, cell, kind, op: opacity, rad: Math.hypot(sx, sz) / 2, rem: 1 };
+  const d = { x, z, sx, sz, yaw, cell, kind, op: opacity, rad: Math.hypot(sx, sz) / 2, rem: 1, i };
   DECALS.list.push(d);
   // a fresh decal is fully dirty, even where the floor was cleaned before (only its own tool's channel)
   const [px, py] = toMask(x, z); const mx = DECALS.mctx;
   mx.save(); mx.globalCompositeOperation = 'lighten'; mx.fillStyle = `rgb(${CHS[kind]})`; mx.beginPath(); mx.arc(px, py, d.rad * MPX * 0.95, 0, 6.2832); mx.fill(); mx.restore();
   DECALS.maskDirty = true;
   return d;
+}
+// take decals away for good (hidden, and no longer counted)
+export function removeDecalsWhere(test) {
+  if (!DECALS.mesh) return;
+  DECALS.list = DECALS.list.filter(d => { if (!test(d)) return true; DECALS.aCell.setW(d.i, 0); DECALS.aCell.needsUpdate = true; return false; });
 }
 const toMask = (x, z) => [(x - G.bounds.minX) * MPX, (z - G.bounds.minZ) * MPX];
 
@@ -445,14 +451,14 @@ export function seedDecals(trails = []) {
   for (let i = 0; i < 2; i++) place('muddy', () => -15.8 + Math.random() * 3, () => 7 + Math.random() * 3, null, Math.PI / 2 + (Math.random() - 0.5) * 0.8);
   for (let i = 0; i < 2; i++) place('smear', () => -15.5 + Math.random() * 3, () => 6.5 + Math.random() * 4);
   // along the robbers' route: heel marks, skids, a smeared print
-  for (const tr of trails) for (let i = 0; i < 3; i++) {
+  for (const tr of trails) for (let i = 0; i < 2; i++) {
     const k = Math.random() * (tr.length - 1), j = k | 0, f = k - j, [x0, z0] = tr[j], [x1, z1] = tr[j + 1];
     const x = x0 + (x1 - x0) * f, z = z0 + (z1 - z0) * f, along = Math.atan2(x1 - x0, z1 - z0) - Math.PI / 2;
     const type = pick(['heel', 'heel', 'skid', 'muddy']);
     place(type, () => x + (Math.random() - 0.5) * 0.8, () => z + (Math.random() - 0.5) * 0.8, null, along + (Math.random() - 0.5) * 0.6);
   }
   // everyday wear all over
-  const spread = { smear: 10, pivot: 6, heel: 12, scratch: 10, grit: 4, cart: 3, mopstreak: 4, gum: 6, speckle: 6, skid: 3 }; // (about a third less than before)
+  const spread = { smear: 7, pivot: 4, heel: 8, scratch: 7, grit: 4, cart: 2, mopstreak: 3, gum: 4, speckle: 4, skid: 2 }; // (the mop's share cut by another third)
   for (const t in spread) for (let i = 0; i < spread[t]; i++) place(t, anyX, anyZ);
   // dull, scuffed lanes where the polish has worn off (the polisher brings the shine back)
   seedDull(trails);
@@ -468,8 +474,8 @@ export function seedDecals(trails = []) {
 // worn polish: long, streaky lanes along the busy routes plus patches at the doors and the counter
 function seedDull(trails) {
   const lanes = [];
-  for (const tr of trails.slice(0, 3)) for (let i = 0; i < tr.length - 1; i++) lanes.push([tr[i][0], tr[i][1], tr[i + 1][0], tr[i + 1][1], rnd(0.8, 1.2), 1]); // (a few of the robbers' routes: the lobby's main walkways)
-  paintDull(lanes, [[-15.8, 8.6, 2.2, 1], [-1.5, -8.5, 2.0, 0.9], [9.2, -9.4, 1.8, 0.9], [-11, -7, 1.8, 0.85]]);
+  for (const tr of trails.slice(0, 2)) for (let i = 0; i < tr.length - 1; i++) lanes.push([tr[i][0], tr[i][1], tr[i + 1][0], tr[i + 1][1], rnd(0.8, 1.2), 1]); // (a few of the robbers' routes: the lobby's main walkways)
+  paintDull(lanes, [[-15.8, 8.6, 2.2, 1], [-1.5, -8.5, 2.0, 0.9], [9.2, -9.4, 1.8, 0.9]]);
 }
 // paint dull floor into the polish mask: lanes [x0, z0, x1, z1, halfWidth, alpha], patches [x, z, r, alpha]
 export function paintDull(lanes, patches, lo = 0.3, hi = 0.46) {

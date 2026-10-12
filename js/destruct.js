@@ -21,7 +21,7 @@ export function addDestructible(d) {
 
 function charge(d) {
   G.stats.damage += d.cost;
-  G.stats.ledger.push(d.name);
+  G.stats.ledger.push(d.name); (G.stats.costs = G.stats.costs || {})[d.name] = (G.stats.costs[d.name] || 0) + d.cost;
   const p = d.obj.getWorldPosition(new THREE.Vector3()); p.y += 1.5;
   floatText(`-$${d.cost.toLocaleString()}`, p, 'cost', 1.3);
   G.onDamage && G.onDamage(d);
@@ -352,7 +352,7 @@ export function knockChair(c, dir, force) {
   if (force > c.tipForce && !c.tipped && !c.noTip) {
     c.tipped = true; c.tipDir.copy(dir);
     if (c.cost) {
-      G.stats.damage += c.cost; G.stats.ledger.push(c.name);
+      G.stats.damage += c.cost; G.stats.ledger.push(c.name); (G.stats.costs = G.stats.costs || {})[c.name] = (G.stats.costs[c.name] || 0) + c.cost;
       floatText('-$' + c.cost, c.pos.clone().setY(1.4), 'cost', 1.2); G.onDamage && G.onDamage({ cost: c.cost });
     }
     if (c.spill) paperBurst(c.pos.x + dir.x * 0.3, 0.25, c.pos.z + dir.z * 0.3, 6, dir.x * 0.8, dir.z * 0.8, 2.2); // the bin's rubbish goes everywhere

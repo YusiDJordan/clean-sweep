@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { G, rand, makeCanvas, clamp, pointInBox } from './state.js';
 import { paperAtlas, glowTex } from './textures.js';
-import { wipeDecals, decalsToClean, decalDirt, updateDecals, seedDecals, polishAt, dullToPolish, roughLeft, GLOW, GOLD_GLSL } from './decals.js';
+import { wipeDecals, decalsToClean, decalDirt, updateDecals, seedDecals, polishAt, dullToPolish, roughLeft, GLOW, GOLD_GLSL, DECALS, roughCells, removeDecalsWhere } from './decals.js';
 
 export const FX = { dirtCanvas: null, dirtCtx: null, dirtTex: null, dirtDirty: false, cleanPct: 0 };
 
@@ -66,7 +66,7 @@ export function scuff(x, z, len, ang, alpha = 0.5) {
   for (let i = 0; i < 3; i++) { ctx.lineWidth = 0.012 + Math.random() * 0.012; ctx.beginPath(); ctx.moveTo(-len / 2, (i - 1) * 0.01); ctx.quadraticCurveTo(0, (Math.random() - 0.5) * len * 0.4, len / 2, (i - 1) * 0.012); ctx.stroke(); }
   ctx.restore(); FX.dirtDirty = true;
 }
-export function trail(points, alpha) {
+export function trail(points, alpha, col) {
   // muddy boot trail along a polyline
   let left = false;
   for (let i = 0; i < points.length - 1; i++) {
@@ -75,7 +75,7 @@ export function trail(points, alpha) {
     for (let d = 0; d < len; d += 0.42) {
       const t = d / len; left = !left;
       const a = alpha * (0.7 + Math.random() * 0.3) * (1 - 0.5 * (i + t) / points.length);
-      footprint(x0 + (x1 - x0) * t, z0 + (z1 - z0) * t, yaw + (Math.random() - 0.5) * 0.12, left, a);
+      footprint(x0 + (x1 - x0) * t, z0 + (z1 - z0) * t, yaw + (Math.random() - 0.5) * 0.12, left, a, col);
     }
   }
 }
@@ -86,6 +86,7 @@ export function somethingToClean(x, z, r, tool = 'mop') {
     for (const p of papers) if (p.rest && !p.neat && p.floorY < 0.1 && Math.hypot(p.x - x, p.z - z) < LITTER_R) return true;
     for (const s of shards) if (s.active && s.rest && Math.hypot(s.x - x, s.z - z) < GLASS_R) return true;
     for (const l of leaves) if (Math.hypot(l.x - x, l.z - z) < LITTER_R) return true;
+    for (const j of junk) if (j.floorY < 0.1 && Math.hypot(j.x - x, j.z - z) < LITTER_R) return true;
     return decalsToClean(x, z, r, 1);
   }
   const ctx = FX.dirtCtx, [px, py] = toPx(x, z), R = Math.max(2, r * PXM | 0);
@@ -130,6 +131,11 @@ export function vacuumAt(x, z, r, dt) {
       leaves.pop(); n++; SUCKED.leaf++; continue;
     }
     if (l.suck > 0) { l.ph = (l.ph || 0) + dt * 20; l.y = 0.006 + 0.22 * l.suck * l.suck; }
+  }
+  for (let i = junk.length - 1; i >= 0; i--) {
+    const j = junk[i]; if (j.floorY > 0.1) continue; // (cups on a table stay put)
+    if (pull(j, LITTER_R)) { junk.splice(i, 1); n++; if (j.kind === 'folder') { SUCKED.paper++; G.stats.papers++; } else SUCKED.leaf++; continue; }
+    if (j.suck > 0) { j.ph = (j.ph || 0) + dt * 20; j.y = j.floorY + 0.002 + 0.2 * j.suck * j.suck; }
   }
   for (const s of shards) {
     if (!s.active) continue;
@@ -270,10 +276,22 @@ export function seedDirt() {
     [[-1, 0.5], [-1.5, -5], [-1.6, -11.5]],
     [[5, -4], [11, -6.8], [14.6, -8.6]],
   ];
-  trails.forEach((t, i) => { if (i !== 1) trail(t, 0.85); }); // (the second, parallel trail is left off: a third less to mop)
+  trails.forEach((t, i) => { if (i !== 1 && i !== 4) trail(t, 0.85); }); // (two of the trails are left off: less to mop)
   // ...and everyday grime as proper decals: smears, heel marks, scratches, grit, cart tracks, gum, dust
   seedDecals(trails);
+  // nothing on the carpets (they'd only get soaked) and nothing under tables, couches and desks (no reaching the mop in)
+  clearDirtZones([...(G.noDirt || []), ...G.colliders.filter(b => b.active && b.y0 < 0.4 && b.y1 < 2.2)]);
   FX.dirtDirty = true;
+}
+// wipe every kind of floor mess out of some boxes (colliders' shape): the dirt layer, decals and dull polish
+export function clearDirtZones(zones, pad = 0.12) {
+  const corners = (b, s) => [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([u, v]) => { const lx = u * (b.hx + pad), lz = v * (b.hz + pad); return [(b.cx + lx * b.c + lz * b.s - G.bounds.minX) * s, (b.cz - lx * b.s + lz * b.c - G.bounds.minZ) * s]; });
+  const poly = (ctx, pts) => { ctx.beginPath(); pts.forEach(([x, y], i) => i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)); ctx.closePath(); ctx.fill(); };
+  const dc = FX.dirtCtx; dc.save(); dc.globalCompositeOperation = 'destination-out'; dc.fillStyle = '#000';
+  for (const b of zones) poly(dc, corners(b, PXM));
+  dc.restore(); FX.dirtDirty = true;
+  if (DECALS.rctx) { const rx = DECALS.rctx, k = DECALS.W / (G.bounds.maxX - G.bounds.minX); rx.save(); rx.fillStyle = '#000'; for (const b of zones) poly(rx, corners(b, k)); rx.restore(); DECALS.roughDirty = true; }
+  removeDecalsWhere(d => zones.some(b => pointInBox(b, d.x, d.z, pad + 0.1)));
 }
 
 // ================= INSTANCED POOLS =================
@@ -286,10 +304,10 @@ let paperMesh;
 // litter, leaves and broken glass light up gold while Karim has the vacuum (red with the other tools)
 function vacuumGlow(sh) {
   Object.assign(sh.uniforms, GLOW);
-  sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nvarying vec2 vGW;')
-    .replace('#include <project_vertex>', '#include <project_vertex>\nvGW = (modelMatrix * instanceMatrix * vec4(transformed, 1.0)).xz;');
-  sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\nuniform vec4 uClean; uniform float uTime; uniform float uTool; varying vec2 vGW;' + GOLD_GLSL)
-    .replace('#include <opaque_fragment>', 'float vac = uTool > 0.5 && uTool < 1.5 ? 1.0 : 0.0;\noutgoingLight = cleanGlow(outgoingLight, vGW, uClean, uTime, vac);\noutgoingLight = wrongGlow(outgoingLight, vGW, uClean, uTime, 1.0 - vac);\n#include <opaque_fragment>');
+  sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nvarying vec2 vGW; varying float vGY;')
+    .replace('#include <project_vertex>', '#include <project_vertex>\nvec4 gw4 = modelMatrix * instanceMatrix * vec4(transformed, 1.0); vGW = gw4.xz; vGY = gw4.y;');
+  sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\nuniform vec4 uClean; uniform float uTime; uniform float uTool; varying vec2 vGW; varying float vGY;' + GOLD_GLSL)
+    .replace('#include <opaque_fragment>', 'float vac = uTool > 0.5 && uTool < 1.5 ? 1.0 : 0.0, onFloor = step(vGY, 0.4);\noutgoingLight = cleanGlow(outgoingLight, vGW, uClean, uTime, vac * onFloor);\noutgoingLight = wrongGlow(outgoingLight, vGW, uClean, uTime, (1.0 - vac) * onFloor);\n#include <opaque_fragment>');
 }
 export function initPapers() {
   const geo = new THREE.PlaneGeometry(0.21, 0.297);
@@ -423,6 +441,43 @@ function updatePapers(dt) {
   paperMesh.count = k;
   paperMesh.instanceMatrix.needsUpdate = true;
   paperMesh.geometry.attributes.aVar.needsUpdate = true;
+}
+
+// ---- JUNK: plastic cups and dropped folders (level 2's lunch area and offices: the vacuum's job) ----
+const MAXJ = 400;
+export const junk = [];
+const JM = {};
+const FOLDER_COL = [0xd8b46a, 0xd8b46a, 0xcfa95c, 0x3d6fb4, 0xb8402f, 0x4a8a4f];
+export function initJunk() {
+  const cupG = new THREE.CylinderGeometry(0.042, 0.03, 0.11, 14, 1, true); cupG.translate(0, 0.055, 0);
+  const folderG = new THREE.BoxGeometry(0.24, 0.012, 0.31); folderG.translate(0, 0.006, 0);
+  for (const [k, g, m] of [['cup', cupG, new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.35, side: THREE.DoubleSide, envMapIntensity: 0.8 })],
+    ['folder', folderG, new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.75 })]]) {
+    m.onBeforeCompile = sh => vacuumGlow(sh);
+    const mesh = new THREE.InstancedMesh(g, m, MAXJ); mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    mesh.castShadow = true; mesh.receiveShadow = true; mesh.frustumCulled = false; mesh.userData.noAO = true; mesh.count = 0;
+    mesh.setColorAt(0, new THREE.Color()); G.scene.add(mesh); JM[k] = mesh;
+  }
+}
+// kind 'cup' (lying on its side, or upright on a table: up) or 'folder'
+export function spawnJunk(kind, x, z, o = {}) {
+  if (!JM[kind] || junk.length >= MAXJ * 2) return;
+  const col = new THREE.Color(o.color ?? (kind === 'cup' ? [0xf4f4f2, 0xf4f4f2, 0xc8302a, 0x3a7cc8][Math.random() * 4 | 0] : FOLDER_COL[Math.random() * FOLDER_COL.length | 0]));
+  junk.push({ kind, x, z, y: o.y || 0.002, floorY: o.y || 0, yaw: o.yaw ?? Math.random() * 6.283, up: !!o.up, rest: true, col });
+}
+export function junkCount() { let n = 0; for (const j of junk) if (j.floorY < 0.1) n++; return n; }
+function updateJunk() {
+  if (!JM.cup) return;
+  const vacOff = !(G.time - (FX.vacT ?? -9) < 0.1), n = { cup: 0, folder: 0 };
+  for (const j of junk) {
+    if (vacOff && j.suck) { j.suck = 0; j.y = j.floorY + 0.002; }
+    const mesh = JM[j.kind], i = n[j.kind]++;
+    if (j.kind === 'cup' && !j.up) _e.set(Math.PI / 2 + (j.suck ? Math.sin(j.ph || 0) * 0.5 * j.suck : 0), j.yaw, 0, 'YXZ'); // (on its side)
+    else _e.set(j.suck ? Math.sin(j.ph || 0) * 0.4 * j.suck : 0, j.yaw, 0, 'YXZ');
+    _q.setFromEuler(_e);
+    _m.compose(_p.set(j.x, j.y + (j.kind === 'cup' && !j.up ? 0.04 : 0), j.z), _q, _s.setScalar(1)); mesh.setMatrixAt(i, _m); mesh.setColorAt(i, j.col);
+  }
+  for (const k in JM) { JM[k].count = n[k]; JM[k].instanceMatrix.needsUpdate = true; if (JM[k].instanceColor) JM[k].instanceColor.needsUpdate = true; }
 }
 
 // ---- FALLEN LEAVES (round the plants: the vacuum's job) ----
@@ -700,5 +755,33 @@ function updateFloats(dt) {
 }
 
 export function updateFX(dt) {
-  updatePapers(dt); updateLeaves(); updateShards(dt); updateParticles(dt); updateTracers(dt); updateFloats(dt); updateDirt(dt);
+  updatePapers(dt); updateLeaves(); updateJunk(); updateShards(dt); updateParticles(dt); updateTracers(dt); updateFloats(dt); updateDirt(dt);
+}
+
+// where there's still something for this tool to clean (world x, z), for the minimap: litter for the vacuum;
+// grime, prints, blood and dull floor for the mop
+export function cleanSpots(tool) {
+  const out = [];
+  if (tool === 'vacuum') {
+    for (const p of papers) if (!p.neat && p.floorY < 0.1) out.push([p.x, p.z]);
+    for (const s of shards) if (s.active) out.push([s.x, s.z]);
+    for (const l of leaves) out.push([l.x, l.z]);
+    for (const j of junk) if (j.floorY < 0.1) out.push([j.x, j.z]);
+    for (const dd of DECALS.list) if (dd.kind === 1 && dd.rem > 0.15) out.push([dd.x, dd.z]); // (grit, soil and dust on the floor)
+    return out;
+  }
+  if (tool !== 'mop') return out;
+  const b = B();
+  if (FX.smallCtx) { // the grime layer, a coarse 1 m grid
+    const c = FX.small, d = FX.smallCtx.getImageData(0, 0, c.width, c.height).data, k = 5; // (5 px per metre)
+    for (let y = 0; y < c.height; y += k) for (let x = 0; x < c.width; x += k) {
+      let hit = false;
+      for (let j = y; j < Math.min(c.height, y + k) && !hit; j++) for (let i = x; i < Math.min(c.width, x + k); i++) if (d[(j * c.width + i) * 4 + 3] > 30) { hit = true; break; }
+      if (hit) out.push([b.minX + (x + k / 2) / k, b.minZ + (y + k / 2) / k]);
+    }
+  }
+  for (const dd of DECALS.list) if (dd.kind === 0 && dd.rem > 0.18) out.push([dd.x, dd.z]);
+  for (const p of pools) if (p.amount > 0.05) out.push([p.x, p.z]);
+  for (const c of roughCells({ x0: b.minX, x1: b.maxX, z0: b.minZ, z1: b.maxZ }, 1.0, 0.2)) if (c.f > 0.15) out.push([c.x, c.z]);
+  return out;
 }
