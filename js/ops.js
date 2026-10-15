@@ -136,6 +136,7 @@ export function buildOps() {
   M.white = new THREE.MeshStandardMaterial({ color: 0xeeeae2, roughness: 0.45 });
   M.counter = new THREE.MeshStandardMaterial({ color: 0x2b2b2e, roughness: 0.25, metalness: 0.1, envMapIntensity: 0.9 });
   M.cabinet = new THREE.MeshStandardMaterial({ color: 0x8e6a48, roughness: 0.5 });
+  M.cabIn = new THREE.MeshStandardMaterial({ color: 0x2a1f16, roughness: 0.7 }); // (the cabinets' carcass, seen in the gaps between the doors)
   M.steel = L.mats.steel; M.black = L.mats.black;
   { const fr = makeCanvas(64, 256), fc = fr.getContext('2d'); fc.fillStyle = '#fff'; fc.fillRect(0, 0, 64, 256); fc.fillStyle = '#b8c4c8'; fc.fillRect(0, 256 * (1 - 1.25 / 2.6), 64, 256 * (0.3 / 2.6)); M.frost = new THREE.CanvasTexture(fr); }
   G.scene.background = skyTex();
@@ -161,7 +162,7 @@ export function buildOps() {
   elevatorBank([-1.6, 1.6], '2');
   box(B.maxX - B.minX, 0.1, 0.04, M.stoneCap, 0, 0.05, B.minZ + 0.02, { cast: false }); // skirting
   // the floor's name between the lifts
-  plane(1.3, 0.62, new THREE.MeshStandardMaterial({ map: signTex(512, 256, '#1c1e22', [{ text: '2', size: 92, color: '#d9b066' }, { text: 'OPERATIONS', size: 44, color: '#ece6da', spacing: 8 }], { top: 108 }), roughness: 0.4, metalness: 0.3 }), 0, 1.95, B.minZ + 0.005);
+  plane(1.3, 0.62, new THREE.MeshStandardMaterial({ map: signTex(512, 256, '#1c1e22', [{ text: '2', size: 92, color: '#d9b066' }, { text: 'OPERATIONS', size: 44, color: '#ece6da', spacing: 8 }], { top: 50 }), roughness: 0.4, metalness: 0.3 }), 0, 1.95, B.minZ + 0.005);
   // low walls on the camera's sides
   box(0.4, 1.0, B.maxZ - B.minZ + 0.4, L.mats.stoneDark, B.maxX + 0.2, 0.5, 0, { uvScale: [3, 1] }); box(0.48, 0.08, B.maxZ - B.minZ + 0.5, M.stoneCap, B.maxX + 0.2, 1.02, 0);
   box(B.maxX - B.minX, 1.0, 0.4, L.mats.stoneDark, 0, 0.5, B.maxZ + 0.2, { uvScale: [3, 1] }); box(B.maxX - B.minX + 0.5, 0.08, 0.48, M.stoneCap, 0, 1.02, B.maxZ + 0.2);
@@ -291,6 +292,7 @@ function buildLights() {
 
 // ---------------- meeting rooms (glass) ----------------
 function meetingTable(cx, cz, yaw) {
+  dressChairs();
   const t = prop2('MeetTable', cx, cz, yaw, { contact: 0.5, ch: 0.8, cw: 0.97, cd: 0.9 });
   G.surfaces.push(makeBox(cx, cz, t.w * 0.9, t.d * 0.8, yaw, 0, t.h, { y: t.h + 0.004, desk: true }));
   const c = Math.cos(yaw), s = Math.sin(yaw);
@@ -309,7 +311,7 @@ function buildRooms() {
   glassRun('x', 3.4, B.minX + 0.15, -10.6, 3);
   glassRun('z', -10.6, -3.4, 0.2, 2); glassRun('z', -10.6, 1.6, 3.4, 1); // (door in between)
   meetingTable(-13.9, 0, Math.PI / 2);
-  { const tv = prop2('TVStand', -16.45, 0, Math.PI / 2, { contact: 0.45, ch: 0.7 }); addDestructible({ kind: 'computer', obj: tv.obj, box: collider(-16.45, 0, 0.5, 1.9, 0, 0, 1.0), cost: 1600, name: 'Television', h: tv.h, baseY: 0 }); }
+  { const tv = prop2('TVStand', -16.45, 0, 0, { contact: 0.45, ch: 0.7 }); /* (screen towards the table) */ addDestructible({ kind: 'computer', obj: tv.obj, box: collider(-16.45, 0, 0.5, 1.9, 0, 0, 1.0), cost: 1600, name: 'Television', h: tv.h, baseY: 0 }); }
   prop2('Whiteboard', -11.6, 2.6, -Math.PI / 4, { contact: 0.4, ch: 1.8 });
   PLANT(-11.3, -2.7);
   // Meeting room B, by the windows north, beside the lifts
@@ -335,48 +337,112 @@ function buildCubicles() {
     const desk = prop2('OpsDesk', dx, dz, yaw, { contact: 0.4, ch: 0.76, cw: 0.95, cd: 0.85 });
     G.surfaces.push(makeBox(dx, dz, desk.w * 0.9, desk.d * 0.8, yaw, 0, desk.h, { y: desk.h + 0.004, desk: true }));
     const [mx, mz] = at(rand(-0.3, 0.3), -d / 2 + 0.32);
-    const comp = prop('Computer', mx, mz, yaw + Math.PI, 0.92, desk.h);
+    const comp = prop('Computer', mx, mz, yaw, 0.92, desk.h); // (screen towards the chair)
     addDestructible({ kind: 'computer', obj: comp.obj, box: makeBox(mx, mz, comp.w * 0.9, comp.d * 0.9, yaw, desk.h, desk.h + comp.h), cost: 1200, name: 'Computer', h: comp.h, baseY: desk.h });
     const [hx, hz] = at(rand(-0.25, 0.25), -d / 2 + 1.25);
     addChair(prop2('OpsChair', hx, hz, yaw + Math.PI + rand(-0.4, 0.4), { contact: 0.4, col: false }).obj);
-    if (Math.random() < 0.35) { const [px, pz] = at(-w / 2 + 0.35, -d / 2 + 0.35); prop('PottedPlant', px, pz, 0, 0.32, desk.h); }
-    if (Math.random() < 0.5) { const [px, pz] = at(w / 2 - 0.4, -d / 2 + 0.45); spawnJunk('cup', px, pz, { y: desk.h + 0.001, up: true }); }
+    const dv = -d / 2 + 0.48 - desk.d / 2; // (the desk's back edge: plants and cups go on its corners, not off the end in mid-air)
+    if (Math.random() < 0.35) { const [px, pz] = at(-desk.w / 2 + 0.17, dv + 0.17); prop('PottedPlant', px, pz, 0, 0.32, desk.h); }
+    if (Math.random() < 0.5) { const [px, pz] = at(desk.w / 2 - 0.2, dv + 0.3); spawnJunk('cup', px, pz, { y: desk.h + 0.001, up: true }); }
   }
   for (const [x, z] of [[-7.5, 4.0], [7.5, 4.0], [-7.6, 9.8], [7.6, 9.8]]) BIN(x, z);
   for (const [x, z] of [[-7.8, -0.9], [7.8, -0.9]]) PLANT(x, z);
 }
 
 // ---------------- kitchen and lunch area ----------------
+// the meeting / lunch chairs: brown leather seats on chrome legs (the model ships them plain white)
+const WC_YAW = 0;
+let chairsDressed = false;
+function dressChairs() {
+  if (chairsDressed || !L.models.MeetChair) return; chairsDressed = true;
+  const c = makeCanvas(512, 512), x = c.getContext('2d');
+  x.fillStyle = '#6a3f22'; x.fillRect(0, 0, 512, 512);
+  for (let i = 0; i < 9000; i++) { const px = Math.random() * 512, py = Math.random() * 512, r = 1 + Math.random() * 2.6, l = Math.random(); x.fillStyle = l < 0.5 ? `rgba(40,22,10,${0.08 + l * 0.2})` : `rgba(150,96,58,${(l - 0.5) * 0.25})`; x.beginPath(); x.arc(px, py, r, 0, 6.283); x.fill(); } // the pebbled grain
+  x.strokeStyle = 'rgba(35,18,8,0.18)'; x.lineWidth = 1; for (let i = 0; i < 70; i++) { let px = Math.random() * 512, py = Math.random() * 512; x.beginPath(); x.moveTo(px, py); for (let k = 0; k < 6; k++) { px += (Math.random() - 0.5) * 30; py += (Math.random() - 0.5) * 30; x.lineTo(px, py); } x.stroke(); } // fine creases
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(2, 2); t.anisotropy = 4;
+  const leather = new THREE.MeshStandardMaterial({ name: 'Leather', map: t, color: 0xffffff, roughness: 0.55, metalness: 0, envMapIntensity: 0.7 });
+  const chrome = new THREE.MeshStandardMaterial({ name: 'ChairMetal', color: 0xb8bbc0, roughness: 0.22, metalness: 1, envMapIntensity: 1.2 });
+  L.models.MeetChair.traverse(o => { if (!o.isMesh) return; const n = o.material.name || ''; if (/leather/i.test(n) && !/metal/i.test(n)) o.material = leather; else if (/metal/i.test(n)) o.material = chrome; });
+}
+
+// the second floor's own rugs: a hand-knotted look in rust, ivory and charcoal (the lobby keeps its blue one)
+let RUG2 = null;
+function opsRug() {
+  if (RUG2) return RUG2;
+  const W = 1024, H = 1448, c = makeCanvas(W, H), x = c.getContext('2d');
+  const rust = '#8e3b22', rustD = '#6e2a17', ivory = '#e9dcc3', char = '#2b2522', ochre = '#c48a3a';
+  x.fillStyle = rust; x.fillRect(0, 0, W, H);
+  const band = (i, col) => { x.strokeStyle = col; x.lineWidth = 2 * i[1]; x.strokeRect(i[0], i[0], W - 2 * i[0], H - 2 * i[0]); };
+  // the border: a charcoal frame, an ivory band of little diamonds, then thin lines in
+  x.fillStyle = char; x.fillRect(0, 0, W, H); x.fillStyle = rust; x.fillRect(26, 26, W - 52, H - 52);
+  x.fillStyle = ivory; x.fillRect(40, 40, W - 80, H - 80); x.fillStyle = rustD; x.fillRect(92, 92, W - 184, H - 184);
+  x.fillStyle = char;
+  const dia = (cx, cy, r) => { x.beginPath(); x.moveTo(cx, cy - r); x.lineTo(cx + r, cy); x.lineTo(cx, cy + r); x.lineTo(cx - r, cy); x.closePath(); x.fill(); };
+  for (let px = 66; px < W - 40; px += 34) { dia(px, 66, 13); dia(px, H - 66, 13); }
+  for (let py = 100; py < H - 60; py += 34) { dia(66, py, 13); dia(W - 66, py, 13); }
+  band([104, 3], ochre); band([118, 1.5], ivory);
+  // the field: a lattice of ivory diamonds outlined in charcoal, an ochre dot in each
+  x.save(); x.beginPath(); x.rect(126, 126, W - 252, H - 252); x.clip();
+  x.fillStyle = rust; x.fillRect(126, 126, W - 252, H - 252);
+  const S = 96;
+  for (let gy = 126 - S; gy < H; gy += S) for (let gx = 126 - S; gx < W; gx += S) {
+    const cx = gx + S / 2, cy = gy + S / 2;
+    x.fillStyle = char; dia(cx, cy, S * 0.5); x.fillStyle = ivory; dia(cx, cy, S * 0.42); x.fillStyle = rust; dia(cx, cy, S * 0.3); x.fillStyle = ochre; dia(cx, cy, S * 0.1);
+  }
+  x.restore();
+  // a central medallion
+  const mx = W / 2, my = H / 2; x.fillStyle = char; dia(mx, my, 230); x.fillStyle = ivory; dia(mx, my, 212); x.fillStyle = rustD; dia(mx, my, 190); x.fillStyle = ochre; dia(mx, my, 120); x.fillStyle = char; dia(mx, my, 70); x.fillStyle = ivory; dia(mx, my, 26);
+  // wool: fine fibres and a little wear, so it reads as a rug and not a print
+  const img = x.getImageData(0, 0, W, H), dd = img.data;
+  for (let i = 0; i < dd.length; i += 4) { const n = (Math.random() - 0.5) * 34 + (((i >> 2) % W) % 3 === 0 ? -6 : 0); dd[i] += n; dd[i + 1] += n; dd[i + 2] += n * 0.9; }
+  x.putImageData(img, 0, 0);
+  x.fillStyle = 'rgba(255,240,220,0.05)'; for (let i = 0; i < 40; i++) { x.beginPath(); x.ellipse(W / 2 + (Math.random() - 0.5) * W * 0.6, H / 2 + (Math.random() - 0.5) * H * 0.6, 60 + Math.random() * 140, 40 + Math.random() * 90, Math.random() * 3, 0, 6.283); x.fill(); }
+  RUG2 = new THREE.CanvasTexture(c); RUG2.colorSpace = THREE.SRGBColorSpace; RUG2.anisotropy = 8;
+  return RUG2;
+}
+
 function buildKitchen() {
+  dressChairs();
   const z0 = B0.minZ, D = 0.66, H = 0.92, x0 = 3.6, x1 = 9.6;
   // counter run along the north wall, upper cabinets, a sink, the coffee machine, cups
-  box(x1 - x0, H - 0.05, D, M.cabinet, (x0 + x1) / 2, (H - 0.05) / 2, z0 + D / 2);
-  box(x1 - x0 + 0.04, 0.05, D + 0.04, M.counter, (x0 + x1) / 2, H - 0.025, z0 + D / 2);
-  for (let x = x0 + 0.3; x < x1; x += 0.6) box(0.012, H - 0.12, 0.01, M.black, x, (H - 0.05) / 2, z0 + D + 0.002, { cast: false }); // door gaps
-  box(x1 - x0, 0.75, 0.36, M.cabinet, (x0 + x1) / 2, 2.15, z0 + 0.18);
+  // base cabinets: a dark carcass set back, a recessed plinth, then a drawer over a door in every 60 cm bay, with bar handles
+  const cx = (x0 + x1) / 2, KICK = 0.1, FZ = z0 + D - 0.02; // (FZ: the doors' front face)
+  box(x1 - x0, H - 0.05 - KICK, D - 0.04, M.cabIn, cx, KICK + (H - 0.05 - KICK) / 2, z0 + (D - 0.04) / 2);
+  box(x1 - x0 - 0.02, KICK, D - 0.1, M.black, cx, KICK / 2, z0 + (D - 0.1) / 2, { cast: false });
+  box(x1 - x0 + 0.04, 0.05, D + 0.04, M.counter, cx, H - 0.025, z0 + D / 2);
+  const bays = Math.round((x1 - x0) / 0.6), bw = (x1 - x0) / bays, gap = 0.004, T = 0.02, DRW = 0.17;
+  for (let i = 0; i < bays; i++) {
+    const bx = x0 + bw * (i + 0.5), top = H - 0.05;
+    box(bw - gap * 2, DRW - gap * 2, T, M.cabinet, bx, top - DRW / 2, FZ + T / 2); // drawer front
+    box(0.16, 0.014, 0.022, M.steel, bx, top - DRW / 2, FZ + T + 0.011); // its pull
+    const dh = top - DRW - KICK; box(bw - gap * 2, dh - gap * 2, T, M.cabinet, bx, KICK + dh / 2, FZ + T / 2); // door
+    const hx = bx + (i % 2 ? -1 : 1) * (bw / 2 - 0.05); box(0.014, 0.14, 0.022, M.steel, hx, KICK + dh - 0.11, FZ + T + 0.011); // its handle, by the opening edge
+  }
+  // wall cabinets: doors with a gap between, pulls along the bottom, and a strip of light underneath
+  const UY0 = 1.78, UH = 0.72, UD = 0.36;
+  box(x1 - x0, UH, UD - 0.02, M.cabIn, cx, UY0 + UH / 2, z0 + (UD - 0.02) / 2);
+  for (let i = 0; i < bays; i++) {
+    const bx = x0 + bw * (i + 0.5);
+    box(bw - gap * 2, UH - gap * 2, T, M.cabinet, bx, UY0 + UH / 2, z0 + UD - 0.02 + T / 2);
+    box(0.014, 0.12, 0.022, M.steel, bx + (i % 2 ? -1 : 1) * (bw / 2 - 0.05), UY0 + 0.1, z0 + UD + 0.011);
+  }
+  box(x1 - x0 - 0.1, 0.012, 0.03, new THREE.MeshBasicMaterial({ color: 0xfff1d6 }), cx, UY0 - 0.006, z0 + UD - 0.06, { cast: false });
   box(0.6, 0.02, 0.44, M.steel, 5.0, H + 0.001, z0 + 0.33, { cast: false }); // sink
   box(0.03, 0.28, 0.03, M.steel, 5.0, H + 0.14, z0 + 0.12); box(0.03, 0.03, 0.18, M.steel, 5.0, H + 0.28, z0 + 0.2);
   collider((x0 + x1) / 2, z0 + D / 2, x1 - x0, D, 0, 0, H);
   G.surfaces.push(makeBox((x0 + x1) / 2, z0 + D / 2, x1 - x0, D * 0.9, 0, 0, H, { y: H + 0.004 }));
-  // coffee machine: a big chrome espresso machine with a glowing panel
-  const cm = new THREE.Group(); cm.position.set(7.1, H, z0 + 0.32); G.scene.add(cm);
-  const mb = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.46, 0.44), new THREE.MeshStandardMaterial({ color: 0x1b1b1e, roughness: 0.3, metalness: 0.5 })); mb.position.y = 0.23; mb.castShadow = true; cm.add(mb);
-  const top = new THREE.Mesh(new THREE.BoxGeometry(0.64, 0.04, 0.46), M.steel); top.position.y = 0.48; cm.add(top);
-  for (const sx of [-0.15, 0.15]) { const g = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.08, 12), M.steel); g.position.set(sx, 0.2, 0.25); cm.add(g); }
-  const pan = new THREE.Mesh(new THREE.PlaneGeometry(0.3, 0.08), new THREE.MeshBasicMaterial({ color: 0x7fd0ff, toneMapped: false })); pan.position.set(0, 0.38, 0.222); cm.add(pan);
-  addDestructible({ kind: 'computer', obj: cm, box: makeBox(7.1, z0 + 0.32, 0.62, 0.44, 0, H, H + 0.5), cost: 2200, name: 'Espresso machine', h: 0.5, baseY: H });
+  // coffee machine (Yusuf's model): a black bean-to-cup machine with a glowing panel
+  { const cm = prop2('CoffeeMachine', 7.1, z0 + 0.34, 0, { y: H, contact: 0.4, col: false });
+    addDestructible({ kind: 'computer', obj: cm.obj, box: makeBox(7.1, z0 + 0.34, cm.w, cm.d, 0, H, H + cm.h), cost: 2200, name: 'Coffee machine', h: cm.h, baseY: H }); }
   // a stack of plastic cups and a few left on the counter
   for (let i = 0; i < 6; i++) spawnJunk('cup', 8.1, z0 + 0.3, { y: H + 0.004 + i * 0.025, up: true, color: 0xf4f4f2, yaw: 0 });
   for (const [x, z] of [[6.4, z0 + 0.5], [8.6, z0 + 0.45], [4.2, z0 + 0.4]]) spawnJunk('cup', x, z, { y: H + 0.004, up: true });
   // the fridge at the end, a microwave, a water cooler
   prop2('Fridge', 10.15 - 0.5, z0 + 0.42, 0, { contact: 0.5 });
-  box(0.5, 0.3, 0.36, M.white, 4.1, H + 0.15, z0 + 0.25); box(0.3, 0.2, 0.01, M.black, 4.0, H + 0.15, z0 + 0.43, { cast: false });
-  { const g = new THREE.Group(); g.position.set(3.3, 0, -9.6); G.scene.add(g);
-    const base = new THREE.Mesh(new THREE.BoxGeometry(0.36, 1.0, 0.36), M.white); base.position.y = 0.5; base.castShadow = true; g.add(base);
-    const jug = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.15, 0.45, 16), new THREE.MeshStandardMaterial({ color: 0x8ec8ff, transparent: true, opacity: 0.55, roughness: 0.05 })); jug.position.y = 1.23; g.add(jug);
-    collider(3.3, -9.6, 0.4, 0.4, 0, 0, 1.4); }
+  prop2('Microwave', 4.15, z0 + 0.3, 0, { y: H, contact: 0.4 });
+  prop2('WaterCooler', 3.3, -9.6, WC_YAW, { contact: 0.45, ch: 1.4 }); // (Yusuf's model)
   // lunch tables: round white tops on a pedestal, meeting chairs round them, cups and a folder or two
-  const tableM = new THREE.MeshStandardMaterial({ color: 0xf2efe8, roughness: 0.3 }), legM = L.mats.darkMetal;
+  const tableM = new THREE.MeshStandardMaterial({ color: 0x131417, roughness: 0.26, metalness: 0.85, envMapIntensity: 1.1 }), legM = new THREE.MeshStandardMaterial({ color: 0xe2e4e8, roughness: 0.08, metalness: 1, envMapIntensity: 1.4 }); // (black metal tops on mirror-chrome bases)
   for (const [x, z] of [[6.2, -3.4], [10.6, -3.6], [14.6, -3.0], [8.4, 0.9], [12.8, 1.1], [14.8, 6.2], [10.9, 6.6]]) {
     const top = new THREE.Mesh(new THREE.CylinderGeometry(0.62, 0.62, 0.04, 32), tableM); top.position.set(x, 0.74, z); top.castShadow = true; top.receiveShadow = true; G.scene.add(top);
     box(0.08, 0.72, 0.08, legM, x, 0.36, z); box(0.55, 0.03, 0.55, legM, x, 0.015, z, { cast: false });
@@ -388,7 +454,7 @@ function buildKitchen() {
   }
   // the serving trolley with cups on it
   { const t = prop2('OpsTrolley', 16.4, -5.6, -Math.PI / 2, { contact: 0.4, col: false }); addChair(t.obj, { r: 0.36, name: 'Trolley', cost: 0, light: true, noTip: true }); }
-  rug(8.6, -9.6, 2.2, 3.4, Math.PI / 2);
+  rug(8.6, -9.6, 2.2, 3.4, Math.PI / 2, opsRug());
   PLANT(16.6, -0.9); PLANT(16.6, 3.4); BIN(9.9, -10.6); BIN(16.4, 8.8);
 }
 
@@ -419,7 +485,7 @@ function buildCorner() {
   const B = B0;
   glassRun('z', -10.6, B.minZ + 0.15, -6.0, 3);
   glassRun('x', -6.0, B.minX + 0.15, -13.4, 2); glassRun('x', -6.0, -12.2, -10.6, 1); // (door in between)
-  rug(-14.0, -9.0, 3.2, 4.2, Math.PI / 2);
+  rug(-14.0, -9.0, 3.2, 4.2, Math.PI / 2, opsRug());
   // the big wooden desk facing the door, the leather chairs, a couch by the window, the bust on a pedestal
   const d = prop('Desk', -13.9, -9.6, 0, 1.05);
   C(-13.9, -9.6, d.w * 0.98, d.d * 0.98, 0, 0.78, { desk: true });
@@ -442,10 +508,10 @@ function buildMisc() {
   addChair(cart.obj, { r: 0.62, heavy: true, noTip: true, mass: 2.2 });
   G.cart = cart.obj;
   // printer and copy corner
-  prop2('Printer', -13.0, 4.6, Math.PI / 2, { contact: 0.55 }); prop2('Printer', -13.0, 6.0, Math.PI / 2, { contact: 0.55 });
+  prop2('Printer', -16.0, 3.86, 0, { contact: 0.55 }); // (one, in the corner by the windows, its back to the meeting room's glass)
   // lounge by the west windows
   { const c = prop('Couch', -16.2, 8.6, Math.PI / 2); C(-16.2, 8.6, c.w * 0.95, c.d * 0.95, Math.PI / 2, 1.1); }
-  rug(-14.4, 8.6, 2.6, 3.8, 0);
+  rug(-14.4, 8.6, 2.6, 3.8, 0, opsRug());
   { const ct = prop('CoffeeTable', -14.3, 8.6, 0, 0.8); const b = C(-14.3, 8.6, ct.w * 0.9, ct.d * 0.9, 0, 0.45);
     addDestructible({ kind: 'table', obj: ct.obj, box: b, cost: 900, name: 'Glass coffee table', w: ct.w, h: ct.h, keepCollider: true });
     G.surfaces.push(makeBox(-14.3, 8.6, ct.w * 0.95, ct.d * 0.95, 0, 0, ct.h, { y: ct.h })); }
@@ -455,7 +521,7 @@ function buildMisc() {
   // a whiteboard and a team area by the cubicles
   prop2('Whiteboard', 9.3, 9.6, -Math.PI / 2, { contact: 0.4, ch: 1.8 });
   // by the lifts
-  PLANT(-3.8, -11.4); PLANT(3.9, -11.4);
+  PLANT(-3.8, -11.4); PLANT(3.0, -11.5); /* (beside the kitchen counter, not in it) */
   for (const [x, z] of [[-5.2, 4.0], [-3.8, -4.6]]) BIN(x, z);
 }
 

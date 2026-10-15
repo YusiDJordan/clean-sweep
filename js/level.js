@@ -24,7 +24,7 @@ const SCALE = { Cart: 1.38, CoffeeTable: 1.5, Computer: 0.62, Couch: 2.75, Desk:
 // newer props: normalised at load (centred on x/z, base on the floor) and scaled so one axis matches real life
 const FIT = {
   Bench: ['x', 1.7], Shelf: ['z', 1.8], Console: ['x', 1.75], Printer: ['y', 1.2], Bust: ['y', 0.62], Piano: ['x', 1.6],
-  Ottoman: ['y', 0.46], Bin: ['y', 0.44], LeatherChair: ['y', 0.95], Door: ['y', 2.2], GoldBar: ['z', 0.3],
+  LobbyBench: ['x', 2.3], Ottoman: ['y', 0.46], Bin: ['y', 0.44], LeatherChair: ['y', 0.95], Door: ['y', 2.2], GoldBar: ['z', 0.3],
 };
 // the custodian's basement (tutorial): Yusuf's props, normalised the same way
 const FIT_BASEMENT = {
@@ -36,7 +36,7 @@ const LOBBY_SHARED = ['FireDoors', 'ExitSign'];
 // level 2 (Operations): Yusuf's office props, plus a few from the lobby and the basement
 const FIT_OPS = {
   OpsTrolley: ['y', 0.88], ToiletStalls: ['x', 4.3], OpsChair: ['y', 1.12], MeetChair: ['y', 0.84], MeetTable: ['x', 3.0],
-  TVStand: ['y', 2.0], Whiteboard: ['y', 1.85], Cubicle: ['x', 3.0], OpsDesk: ['x', 1.6],
+  TVStand: ['y', 2.0], Whiteboard: ['y', 1.85], Cubicle: ['x', 3.0], OpsDesk: ['x', 1.6], CoffeeMachine: ['y', 0.42], Microwave: ['x', 0.5], WaterCooler: ['y', 1.32],
 };
 const OPS_SHARED = ['Bin', 'Printer', 'Shelf', 'LeatherChair', 'Bust', 'Ottoman', 'Fridge', 'Door'];
 L.dims = {};
@@ -70,7 +70,7 @@ function fitModel(n, scene) {
 
 // ---------- model files, kept in the browser's cache storage so a reload (New game, the stairs) doesn't download
 // them all again; the other level's files are fetched quietly in the background while you play ----------
-const MODEL_CACHE = 'cleansweep-models-52'; // (bump this whenever anything in models/ changes)
+const MODEL_CACHE = 'cleansweep-models-65'; // (bump this whenever anything in models/ changes)
 let cacheP = null;
 function modelCache() {
   if (!cacheP) cacheP = (async () => {
@@ -93,12 +93,12 @@ async function fetchModel(path) {
 async function fetchJSON(path) { try { const r = await fetchModel(path); return r.ok ? await r.json() : null; } catch (e) { return null; } }
 // every file a level loads
 function levelFiles(level) {
-  if (level === 'ops') return { names: ['Cart', 'Computer', 'PottedPlant', 'SmallerPlantBox', 'PlantBox', 'Desk', 'Couch', 'CoffeeTable'], fits: [...Object.keys(FIT_OPS), ...OPS_SHARED], extra: ['MainChar', 'Karim', 'RobberRig'], json: ['Idle_Mop', 'Sweep_Mop', 'Dodge', 'RobberAnims'] };
+  if (level === 'ops') return { names: ['Cart', 'Computer', 'PottedPlant', 'SmallerPlantBox', 'PlantBox', 'Desk', 'Couch', 'CoffeeTable'], fits: [...Object.keys(FIT_OPS), ...OPS_SHARED], extra: ['MainChar', 'Karim', 'RobberRig', 'Boss'], json: ['Idle_Mop', 'Sweep_Mop', 'Dodge', 'RobberAnims', 'Takedown', 'SwingR', 'SwingL', 'HitDown', 'HitUp', 'LastAttack'] };
   const base = level === 'basement';
   const names = base ? ['Cart', 'OfficeChair', 'PottedPlant'] : Object.keys(EXT);
   const fits = base ? ['Bin', 'Bench', ...Object.keys(FIT_BASEMENT)] : [...Object.keys(FIT).filter(n => !FIT_BASEMENT[n]), ...LOBBY_SHARED];
   const extra = base ? ['MainChar', 'Karim', 'RobberRig'] : ['MainChar', 'Sign', 'Karim', 'RobberRig'];
-  const json = ['Idle_Mop', 'Sweep_Mop', 'Dodge', 'RobberAnims', ...(base ? [] : ['TitlePose'])];
+  const json = ['Idle_Mop', 'Sweep_Mop', 'Dodge', 'RobberAnims', 'Takedown', 'SwingR', 'SwingL', 'HitDown', 'HitUp', 'LastAttack', ...(base ? [] : ['TitlePose'])];
   return { names, fits, extra, json };
 }
 // fetch the other level's files into the cache, one at a time, while the player is busy
@@ -133,7 +133,7 @@ export async function loadModels(onProgress, level = 'lobby') {
   else for (const n of LOBBY_SHARED) FIT[n] = FIT_BASEMENT[n]; // (the stairwell door up from the basement)
   const loader = new GLTFLoader();
   // authored animations made in Blender (retargeted onto Karim's skeleton)
-  [L.idleMop, L.sweepMop, L.dodgeClip, L.robberAnims, L.titlePose] = await Promise.all(['Idle_Mop', 'Sweep_Mop', 'Dodge', 'RobberAnims', (base || level === 'ops') ? null : 'TitlePose'].map(n => n ? fetchJSON(`models/${n}.json`) : null));
+  [L.idleMop, L.sweepMop, L.dodgeClip, L.robberAnims, L.titlePose, L.takedown, L.swingR, L.swingL, L.hitDown, L.hitUp, L.lastAttack] = await Promise.all(['Idle_Mop', 'Sweep_Mop', 'Dodge', 'RobberAnims', (base || level === 'ops') ? null : 'TitlePose', 'Takedown', 'SwingR', 'SwingL', 'HitDown', 'HitUp', 'LastAttack'].map(n => n ? fetchJSON(`models/${n}.json`) : null));
   // (the basement only needs the cart, a chair, a bin and its own props)
   const { names, fits, extra } = levelFiles(level);
   let done = 0; const total = names.length + fits.length + extra.length;
@@ -201,10 +201,10 @@ export function prop2(name, x, z, yaw = 0, o = {}) {
   return { obj, w, h, d };
 }
 // a flat rug using the user's carpet texture (long side along z before yaw)
-export function rug(x, z, wShort, dLong, yaw = 0) {
+export function rug(x, z, wShort, dLong, yaw = 0, tex = null) {
   const g = new THREE.Group(); g.position.set(x, 0.003, z); g.rotation.y = yaw; G.scene.add(g);
   (G.noDirt = G.noDirt || []).push(makeBox(x, z, wShort, dLong, yaw)); // (nothing to mop on a carpet)
-  const m = new THREE.Mesh(new THREE.PlaneGeometry(wShort, dLong), new THREE.MeshStandardMaterial({ map: L.rugTex, roughness: 0.95, envMapIntensity: 0.35, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 }));
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(wShort, dLong), new THREE.MeshStandardMaterial({ map: tex || L.rugTex, roughness: 0.95, envMapIntensity: 0.35, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 }));
   m.rotation.x = -Math.PI / 2; m.receiveShadow = true; m.userData.noReflect = true; g.add(m);
   return g;
 }
@@ -927,7 +927,7 @@ export function updateElevators(dt) {
   const P = G.player, z0 = G.bounds.minZ, live = G.state === 'play' || G.state === 'cleared';
   for (const e of L.elevators) {
     const near = live && Math.abs(P.pos.x - e.x) < 1.5 && P.pos.z - z0 < 2.2 && P.hp > 0;
-    let want = near ? 1 : 0;
+    let want = near || e.force ? 1 : 0;
     if (G.leaving) want = G.leaving.e === e && (G.leaving.phase === 'walk' || G.leaving.phase === 'turn') ? 1 : 0;
     if (want && e.open === 0 && !e.chime) { e.chime = true; SFX.play('ding'); }
     if (!want && e.open === 0) e.chime = false;
@@ -1111,6 +1111,16 @@ export function buildLevel() {
   buildFloor();
   buildArchitecture();
   buildProps();
+  { // the sculptural bench in the middle of the floor: long, room for a row of people (stretched lengthways, not taller)
+    const b = prop2('LobbyBench', 0.6, 2.2, 0, { contact: 0.5, col: false }), SX = 1.9, SZ = 1.15;
+    b.obj.scale.x *= SX; b.obj.scale.z *= SZ;
+    collider(0.6, 2.2, b.w * SX * 0.9, b.d * SZ * 0.72, 0, 0, 0.6);
+    // grime gathered round and under it (mopped like any other dirt: the mop reaches under from either side)
+    G.dirtSpots = [[0.6, 2.2, b.w * SX, b.d * SZ]];
+  }
+  // above the back wall: darkness (the ride out pans up to the bank's name; no grey void over the wall)
+  const bk = new THREE.Mesh(new THREE.PlaneGeometry(80, 24), new THREE.MeshBasicMaterial({ color: 0x000000 }));
+  bk.position.set(0, 18.8, G.bounds.minZ - 0.6); /* (from just under the top of the 7 m wall up: clear of the elevator cabs behind it) */ bk.userData.noProbe = true; bk.userData.noReflect = true; bk.userData.noAO = true; G.scene.add(bk);
 }
 
 // Fade tall things that hide the player from the iso camera

@@ -4,7 +4,7 @@
 // Every tool is built in the mop's frame: handle along +Y (grips at the -Y end), the working end towards +Y,
 // so all of Karim's poses, swings and the Blender mopping animation work with any of them.
 import * as THREE from 'three';
-import { G } from './state.js';
+import { G, makeBox } from './state.js';
 
 export const TOOL_ORDER = ['mop', 'vacuum', 'barrow']; // (the mop also polishes now: no separate polisher)
 export const TOOL_LABEL = { mop: 'Mop', vacuum: 'Vacuum', polisher: 'Polisher', barrow: 'Wheelbarrow' };
@@ -28,6 +28,7 @@ const add = (parent, geo, mat, x = 0, y = 0, z = 0, rx = 0, ry = 0, rz = 0) => {
 };
 
 // ---- upright vacuum ----
+let VAC_BLUE = null;
 export function buildVacuum() {
   const M = mats(), g = new THREE.Group(); g.name = 'vacuum';
   add(g, new THREE.CylinderGeometry(0.015, 0.015, 0.6, 10), M.steel, 0, -0.27, 0);                  // handle tube
@@ -35,7 +36,8 @@ export function buildVacuum() {
   add(g, new THREE.TorusGeometry(0.055, 0.013, 8, 18, Math.PI), M.dark, 0, -0.58, 0, 0, 0, Math.PI);   // loop handle
   add(g, new THREE.CylinderGeometry(0.02, 0.02, 0.05, 8), M.dark, 0, -0.03, 0);                        // collar
   // body: rounded motor/bag housing with a clear dust bin on the front
-  const body = add(g, new THREE.CapsuleGeometry(0.085, 0.3, 6, 16), M.red, 0, 0.24, -0.005);
+  const VB = VAC_BLUE || (VAC_BLUE = phys(0xeeebe4, 0.32)); /* (white, like Karim's dishdasha) */ // (its own blue: the mop pole's blue changes with the handle upgrades)
+  const body = add(g, new THREE.CapsuleGeometry(0.085, 0.3, 6, 16), VB, 0, 0.24, -0.005);
   body.scale.set(1.15, 1, 0.82);
   add(g, new THREE.CylinderGeometry(0.056, 0.056, 0.2, 18), M.bin, 0, 0.2, 0.072);
   add(g, new THREE.CylinderGeometry(0.05, 0.05, 0.08, 14), M.dust, 0, 0.27, 0.072);
@@ -47,7 +49,7 @@ export function buildVacuum() {
   // floor head: stays flat on the floor whatever the handle angle (like the real swivel)
   const head = new THREE.Group(); head.position.y = HEAD_Y; g.add(head);
   add(head, new THREE.BoxGeometry(0.36, 0.055, 0.21), M.dark, 0, -0.07, 0.05);
-  add(head, new THREE.BoxGeometry(0.33, 0.04, 0.15), M.red, 0, -0.03, 0.06);
+  add(head, new THREE.BoxGeometry(0.33, 0.04, 0.15), VB, 0, -0.03, 0.06);
   add(head, new THREE.BoxGeometry(0.34, 0.012, 0.02), M.rubber, 0, -0.095, 0.145);                    // bristle strip
   for (const sx of [-1, 1]) add(head, new THREE.CylinderGeometry(0.03, 0.03, 0.025, 14), M.rubber, sx * 0.15, -0.075, -0.06, 0, 0, Math.PI / 2);
   add(head, new THREE.SphereGeometry(0.035, 12, 8), M.grey, 0, -0.01, -0.04);                          // swivel
@@ -84,7 +86,7 @@ export function buildPolisher() {
 let POLE = null;
 export function addMopPole(g, ML) {
   if (!POLE) POLE = {
-    blue: new THREE.MeshStandardMaterial({ color: 0x1d62c8, roughness: 0.3, metalness: 0, envMapIntensity: 1.1 }),
+    blue: new THREE.MeshStandardMaterial({ color: 0xf2f2ee, roughness: 0.32, metalness: 0, envMapIntensity: 1.1 }),
     black: new THREE.MeshStandardMaterial({ color: 0x141518, roughness: 0.55, metalness: 0, envMapIntensity: 0.8 }),
     grip: new THREE.MeshStandardMaterial({ color: 0x0e0f11, roughness: 0.85, metalness: 0 }),
   };
@@ -100,7 +102,7 @@ export function addMopPole(g, ML) {
 // the handle's material follows the Mop Handle upgrade (plastic, aluminium, iron, titanium, platinum): every pole
 // shares the one material, so his mop, the cart's and the one in the elevator all change together
 const HANDLE_LOOK = [
-  { color: 0x1d62c8, roughness: 0.3, metalness: 0, env: 1.1, em: 0x000000 },   // plastic (blue)
+  { color: 0xf2f2ee, roughness: 0.32, metalness: 0, env: 1.0, em: 0x000000 },   // plastic (white: all white, the clean one in a room full of colour)
   { color: 0xb4b8be, roughness: 0.5, metalness: 0.9, env: 1.1, em: 0x000000 },  // aluminium (satin, brushed)
   { color: 0x3c3a38, roughness: 0.7, metalness: 1, env: 0.8, em: 0x000000 },   // iron (dark, forged)
   { color: 0x7a6ad0, roughness: 0.18, metalness: 1, env: 1.7, em: 0x0c0818 },   // titanium (anodised violet-blue)
@@ -196,8 +198,8 @@ function trayGeometry() {
 }
 export function buildWheelbarrow() {
   const M = mats(), g = new THREE.Group(); g.name = 'barrow';
-  const paint = phys(0x2f6e3c, 0.45), tube = std(0x2b2d30, 0.45, 0.6);
-  const tray = add(g, trayGeometry(), new THREE.MeshPhysicalMaterial({ color: 0x2f6e3c, roughness: 0.45, clearcoat: 0.6, side: THREE.DoubleSide }));
+  const paint = phys(0xeeebe4, 0.45), tube = std(0x2b2d30, 0.45, 0.6); /* (white, like Karim's dishdasha) */
+  const tray = add(g, trayGeometry(), new THREE.MeshPhysicalMaterial({ color: 0xeeebe4, roughness: 0.45, clearcoat: 0.6, side: THREE.DoubleSide }));
   // rim
   // (each rim tube is turned to lie along its own edge: the front and back ones used to end up lengthways down the middle)
   const rim = (x0, z0, x1, z1) => { const L = Math.hypot(x1 - x0, z1 - z0); const m = add(g, new THREE.CylinderGeometry(0.016, 0.016, L, 8), tube, (x0 + x1) / 2, 0.645, (z0 + z1) / 2); m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), new THREE.Vector3(x1 - x0, 0, z1 - z0).normalize()); };
@@ -225,7 +227,20 @@ export function buildBarrow() {
   if (!G.cart) return;
   const grp = buildWheelbarrow(); G.scene.add(grp);
   G.barrow = { group: grp, held: false, load: [], pitch: 0, roll: 0 };
+  // a solid box where it stands (off while he's pushing it): you can't walk through a parked barrow
+  grp.position.set(0, 0, 0); grp.quaternion.identity(); grp.updateMatrixWorld(true);
+  const bb = new THREE.Box3().setFromObject(grp), sz = bb.getSize(new THREE.Vector3());
+  G.barrow.colLocal = bb.getCenter(new THREE.Vector3()).setY(0); G.barrow.colSize = [sz.x * 0.85, sz.z * 0.85];
+  G.barrow.col = makeBox(0, 0, sz.x * 0.85, sz.z * 0.85, 0, 0, Math.min(0.8, bb.max.y), { barrow: true }); G.colliders.push(G.barrow.col);
   parkBarrow();
+}
+const _bc = new THREE.Vector3();
+export function syncBarrowCol() { // (follows the parked barrow; off while it's held)
+  const b = G.barrow; if (!b || !b.col) return;
+  b.col.active = !b.held; if (b.held) return;
+  const g = b.group, f = _bc.set(0, 0, 1).applyQuaternion(g.quaternion), yaw = Math.atan2(f.x, f.z);
+  const c = _bc.copy(b.colLocal).applyMatrix4(g.matrixWorld);
+  b.col.cx = c.x; b.col.cz = c.z; b.col.c = Math.cos(yaw); b.col.s = Math.sin(yaw);
 }
 const _bq = new THREE.Quaternion(), _by = new THREE.Quaternion(), _bp = new THREE.Vector3(), _ax = new THREE.Vector3(1, 0, 0), _yv = new THREE.Vector3(0, 1, 0);
 function placeBarrow(axle, yaw, pitch) {
@@ -238,9 +253,9 @@ function placeBarrow(axle, yaw, pitch) {
 }
 export function parkBarrow() {
   const c = G.cart, b = G.barrow; if (!b || !c) return;
-  if (b.spot) { placeBarrow(b.spot.axle, b.spot.yaw, 0); return; } // (left wherever he let go of it)
+  if (b.spot) { placeBarrow(b.spot.axle, b.spot.yaw, 0); syncBarrowCol(); return; } // (left wherever he let go of it)
   const spot = new THREE.Vector3(1.15, 0, 1.25).applyAxisAngle(_yv, c.rotation.y).add(c.position); // beside the cart
-  placeBarrow(spot.setY(B_AXLE.y), c.rotation.y + Math.PI * 0.25, 0);
+  placeBarrow(spot.setY(B_AXLE.y), c.rotation.y + Math.PI * 0.25, 0); syncBarrowCol();
 }
 // let go of the barrow: it's set down right where it is (or beside the cart, if he's at the cart)
 export function releaseBarrow(atCart) {

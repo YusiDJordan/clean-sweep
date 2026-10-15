@@ -20,9 +20,11 @@ const ICON = {
   mop: '<path d="M16 3 9.5 14.5"/><path d="M7 13.5l5 3-1.6 2.6c-.6 1-2 1.6-3.2 1.2L5 19.4"/><path d="M6 18l-2 3M8.3 19.4 7 22.5M10.6 19.8 10 23"/>',
   heart: '<path d="M12 20.5s-7.5-4.6-7.5-10.2A4.3 4.3 0 0 1 12 7.6a4.3 4.3 0 0 1 7.5 2.7c0 5.6-7.5 10.2-7.5 10.2z"/><path d="M12 10.5v5M9.5 13h5"/>',
   takedown: '<path d="M12 3l3.2 5.6L21 12l-5.8 3.4L12 21l-3.2-5.6L3 12l5.8-3.4z"/><path d="M12 8.5v7M8.5 12h7"/>',
+  lungs: '<path d="M12 4v7.5M12 11.5c-1.2 1.4-2.3 1.6-3.2 1.4M12 11.5c1.2 1.4 2.3 1.6 3.2 1.4"/><path d="M9.6 8.2C7.5 7 4.5 10 4 14.5c-.4 3.4.9 5 2.8 5 2 0 3.4-1.5 3.4-4.3V9.6c0-.6-.2-1.1-.6-1.4z"/><path d="M14.4 8.2C16.5 7 19.5 10 20 14.5c.4 3.4-.9 5-2.8 5-2 0-3.4-1.5-3.4-4.3V9.6c0-.6.2-1.1.6-1.4z"/>',
   shoe: '<path d="M3 16.5h16.5a1.5 1.5 0 0 0 1.5-1.5c0-1.6-1.6-2.4-3.4-2.9l-3.6-1-2-3.6H8.5L7.6 9H3z"/><path d="M3 19.5h18M10 10.5l1.5 1.8M12.5 10l1.4 1.8"/>',
   leap: '<path d="M4 18c2.5-8 9-11 15-9"/><path d="M15.5 5.5 19.5 9l-4.3 2.6"/><circle cx="5" cy="19" r="1.4"/>',
   bolt: '<path d="M13 2.5 5.5 13.5H11l-1 8L18.5 10H13z"/>',
+  bowl: '<circle cx="9" cy="14" r="6"/><circle cx="7.6" cy="12" r=".7"/><circle cx="10.2" cy="11.6" r=".7"/><circle cx="9.4" cy="14" r=".7"/><path d="M17 6.5v11M20 8.5v9"/><path d="M16 6.5h2M19 8.5h2"/>',
 };
 // an upgrade point: a gold arrow pointing up
 export const UPI = '<svg class="upi" viewBox="0 0 24 24"><path d="M12 3.5l7.5 8.5h-4.6v8.5H9.1V12H4.5z" fill="currentColor"/></svg>';
@@ -97,7 +99,9 @@ function buildCab(scene) {
   for (const r of LIFT.reflectors || []) { const o = r.onBeforeRender; r.onBeforeRender = (...a) => { lamp.visible = false; o.apply(r, a); lamp.visible = true; }; } // (the lamp's glare stays out of the floor and mirror)
   const disp = add(new THREE.BoxGeometry(0.34, 0.14, 0.02), new THREE.MeshBasicMaterial({ color: 0x220a04 }), 0.62, 2.2, -D / 2 + 0.035);
   const c = document.createElement('canvas'); c.width = 128; c.height = 52; LIFT.dispCtx = c.getContext('2d'); LIFT.dispTex = new THREE.CanvasTexture(c);
-  add(new THREE.PlaneGeometry(0.32, 0.13), new THREE.MeshBasicMaterial({ map: LIFT.dispTex, toneMapped: false, transparent: true }), 0.62, 2.2, -D / 2 + 0.047);
+  // the floor display: on the left wall, above the buttons and the plaque (it used to sit half behind the mirror's frame)
+  add(new THREE.BoxGeometry(0.02, 0.17, 0.36), new THREE.MeshStandardMaterial({ color: 0x0b0b0c, roughness: 0.3, metalness: 0.4 }), -W / 2 + 0.012, 1.86, D / 2 - 0.3);
+  add(new THREE.PlaneGeometry(0.32, 0.13), new THREE.MeshBasicMaterial({ map: LIFT.dispTex, toneMapped: false, transparent: true }), -W / 2 + 0.024, 1.86, D / 2 - 0.3).rotation.y = Math.PI / 2;
   // light
   const key = new THREE.SpotLight(0xffe7c4, 9, 6, 0.95, 0.6, 1.6); key.position.set(0, H - 0.05, 0.25); key.target.position.set(0, 0.6, -0.1);
   key.castShadow = true; key.shadow.mapSize.set(1024, 1024); key.shadow.bias = -0.0005; scene.add(key, key.target);
@@ -170,7 +174,7 @@ export async function initLift() {
   LIFT.cam = new THREE.PerspectiveCamera(30, innerWidth / innerHeight, 0.1, 40);
   buildCab(scene); buildFlair(scene);
   await buildKarim(scene);
-  drawDisplay('▲ 2');
+  drawDisplay('▲ ' + (LIFT.floorTo || 2));
   LIFT.ready = true;
   frame();
 }
@@ -317,7 +321,14 @@ export async function enterLift(onNext, onRetry, report) {
   $('lift').classList.add('show');
   render();
   if (report) playReport(report);
-  $('liftnext').onclick = () => { $('liftnext').textContent = 'Going up…'; SFX.muzak(false); onNext && onNext(); };
+  $('liftnext').onclick = () => { // the cab arrives: the stop (Yusuf's sound), a fade to black, then the next floor
+    if (LIFT.going) return; LIFT.going = true;
+    $('liftnext').textContent = 'Going up…'; SFX.muzak(false);
+    const played = SFX.sample('elevStop', 1, 1, 0);
+    LIFT.shake = 0.9; setTimeout(() => { LIFT.shake = Math.max(LIFT.shake, 0.55); }, 380); // (the cab jolts as it stops)
+    setTimeout(() => bo.classList.add('on'), played ? 1500 : 0);
+    setTimeout(() => onNext && onNext(), played ? 2350 : 250);
+  };
   $('liftretry').onclick = () => { $('liftretry').textContent = 'Going down…'; SFX.muzak(false); onRetry && onRetry(); };
   SFX.init(); SFX.muzak(true); SFX.play('ding');
   setTimeout(() => bo.classList.remove('on'), 120);

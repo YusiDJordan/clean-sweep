@@ -3,6 +3,7 @@ import * as THREE from 'three';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
+import { clothify } from './mixamo.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
@@ -117,6 +118,7 @@ function buildComposer() {
       orig();
       G.scene.traverse(o => { if (o.userData.noAO && o.visible) { o.visible = false; this._visibilityCache.push(o); } });
     };
+    clothify(gtao.normalMaterial, true); // (the AO sees Karim's dress where it really is: pushed off the legs, swinging)
     composer.addPass(gtao);
     R.gtao = gtao;
   } else R.gtao = null;

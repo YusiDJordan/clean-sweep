@@ -1,6 +1,6 @@
 // Player (the custodian) and robbers: movement, free-flow mop combat, dodge, sweep, cleaning, enemy AI
 import * as THREE from 'three';
-import { G, CLEAN, clamp, lerp, smooth, rand, pick, angDiff, dampAngle, damp, resolveCircle, rayBox, sphereBox, pointInBox } from './state.js';
+import { G, CLEAN, clamp, lerp, smooth, rand, pick, angDiff, dampAngle, damp, resolveCircle, rayBox, sphereBox, pointInBox, canReach } from './state.js';
 import { Rig, RIG } from './rig.js';
 import { skinCharacter, KARIM_DIMS } from './skin.js';
 import { MixamoBody, mixamoDims } from './mixamo.js';
@@ -13,13 +13,15 @@ import { pathBlocked, flowDir } from './nav.js';
 import { blobTex, ringTex } from './textures.js';
 import { SFX } from './audio.js';
 import { hitDestructible, pushChairs, knockChair, chairs, addChair, suckChair } from './destruct.js';
-import { spark, flash, droplets, tracer, paperBurst, disturbPapers, collectAt, cleanAt, floatText, Trail, chunks, spawnPaper, bloodPool, bloodDrip , somethingToClean, vacuumAt, polishFloor, SUCKED } from './fx.js';
+import { spark, flash, droplets, tracer, paperBurst, disturbPapers, disturbJunk, collectAt, cleanAt, floatText, Trail, chunks, spawnPaper, bloodPool, bloodDrip , somethingToClean, vacuumAt, polishFloor, SUCKED } from './fx.js';
 
 const V = (x, y, z) => new THREE.Vector3(x, y, z);
 const _v1 = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vector3(), _nav = new THREE.Vector3();
 const PIV = RIG.PIVOT;
 const ENEMY_SIZE = 0.75; // robbers are 25% smaller than the model's authored scale
 const RUN_CLIP = 3.75, STRIDE = 1.08; // run cycle ~24% slower than the raw sync, strides stretched just enough that the feet don't skate // run cycle plays ~28% slower than before; strides warped longer so the planted foot stays put
+const _tkP = new THREE.Vector3(), _tkP2 = new THREE.Vector3(), _tkQ = new THREE.Quaternion(), _tkQ2 = new THREE.Quaternion(), _tkS = new THREE.Vector3(), _tkM = new THREE.Matrix4();
+const ROB_SPEED = 1.3; // robbers' pace on their feet
 const RUN = 1.2;      // run speed as a fraction of G.ps.speed (20% calmer than before)
 const WALK = 0.525;     // walk speed as a fraction of G.ps.speed (the walk clip plays back in step with it)
 let blobMat = null;
@@ -83,7 +85,8 @@ const ATTACK_CLIPS = {
   swingR: ['SweepAttack', 0.02, 0.42], swingL: ['Combo_Attack', 0.05, 0.5], jab: ['Combo_Attack', 0.6, 1.0],
   upper: ['Combo_Attack', 1.62, 2.1], slam: ['Finisher', 0.3, 0.85], spin: ['SweepAttack', 0.0, 0.62],
 };
-const COMBO_SEQ = ['swingR', 'swingL', 'jab', 'swingR', 'upper', 'swingL', 'slam'];
+const ATK_GAP = 0.36; // (seconds from one swing starting to the next one being allowed)
+const COMBO_SEQ = ['swingR', 'swingL', 'jab', 'upper']; // (four hits; the spin-and-chop is saved for the last robber standing)
 
 // ================================= PLAYER =================================
 // the Mixamo dodge roll is a loop that starts mid-dive: play it from the standing frame before the dive,
@@ -146,6 +149,8 @@ export class Player {
       let tex = null; L.models.MainChar?.traverse(o => { if (o.isMesh && o.material.map) tex = o.material.map; });
       this.body = new MixamoBody(this.rig, kg, tex, L.idleMop, L.sweepMop);
       if (L.dodgeClip) this.body.addClip(L.dodgeClip);
+      if (L.takedown) { this.body.addClip(L.takedown.clip); this.takedownMop = L.takedown.mop; this.takedownImpact = L.takedown.impact || null; this.takedownWin = L.takedown.windows || null; } // (Yusuf's Blender takedown: arms and mop authored together)
+      this.authAtk = {}; for (const [k, a] of [['swingR', L.swingR], ['swingL', L.swingL], ['jab', L.hitDown], ['upper', L.hitUp], ['slam', L.lastAttack]]) if (a) { this.body.addClip(a.clip); this.authAtk[k] = { clip: a.clip.name, mop: a.mop, win: a.windows, dur: a.dur, tip: a.tip === 'butt' ? -0.5 : 0.5, stop: a.stop || (a.tip === 'butt' ? 1.3 : 1.1), bones: a.bones || [] }; } // (Yusuf's Blender attacks: arms, legs and mop together)
     } else if (L.models.MainChar) skinCharacter(this.rig, L.models.MainChar);
     this.kickN = 0;
     this.blob = blob(this.rig.root);
@@ -185,6 +190,20 @@ export class Player {
     if (G.input.mouseActive) { const d = _v1.copy(G.mouseGround).sub(this.pos).setY(0); if (d.lengthSq() > 0.25) return d.normalize().clone(); }
     return V(Math.sin(this.yaw), 0, Math.cos(this.yaw));
   }
+  // the robber he keeps his eyes on while standing still in a fight: the one nearest the mouse pointer (or nearest
+  // him without a mouse), and he sticks with it until another is clearly a better pick
+  faceFoe() {
+    let best = null, bs = 1e9;
+    const useMouse = G.input.mouseActive;
+    for (const e of G.enemies) {
+      if (e.ko || e.down || !e.aggro) continue;
+      const d = e.pos.distanceTo(this.pos); if (d > 10) continue;
+      let sc = useMouse ? Math.hypot(e.pos.x - G.mouseGround.x, e.pos.z - G.mouseGround.z) + d * 0.25 : d;
+      if (e === this.lookFoe) sc *= 0.7;
+      if (sc < bs) { bs = sc; best = e; }
+    }
+    this.lookFoe = best; return best;
+  }
   pickTarget(dir, range = 9) {
     let best = null, bs = 1e9;
     for (const e of G.enemies) {
@@ -212,18 +231,23 @@ export class Player {
     if (this.tool !== 'mop') return; // only the mop is a weapon
     if (G.tutAllow && !G.tutAllow.includes('attack')) return; // (tutorial: one move at a time)
     if (!(this.canAct() || this.cancelable())) { this.queued = 'attack'; this.queueT = 0.35; return; }
+    if (G.simTime < (this.nextAtkAt || 0)) { if (!this.queued) { this.queued = 'attack'; this.queueT = this.nextAtkAt - G.simTime + 0.05; } return; } // (a beat between swings: mashing doesn't swing faster)
     let target = this.pickTarget(this.prefDir(), G.ps.reach);
     if (!target && G.tutAllow && G.tutTarget && !G.tutTarget.ko && G.tutTarget.pos.distanceTo(this.pos) < 3) target = G.tutTarget; // (tutorial: never whiff on the one robber, even tucked behind a plant)
-    let name = COMBO_SEQ[this.seq++ % COMBO_SEQ.length];
+    if (G.simTime - (this.lastSwingAt ?? -9) > 1.1) this.seq = 0; // (a pause breaks the chain: back to the first swing)
+    this.lastSwingAt = G.simTime;
+    let name = COMBO_SEQ[this.seq++ % COMBO_SEQ.length]; // (swings 1-4 in order)
     if (target) {
       const remaining = G.enemies.filter(e => !e.ko && e.aggro).length;
       const willKO = target.down || target.hp - MOVES[name].dmg <= 0;
-      if (willKO && remaining === 1 && G.enemies.filter(e => !e.ko).length === 1) name = 'spin';
+      if (willKO && remaining === 1 && G.enemies.filter(e => !e.ko).length === 1 && !target.isBoss) name = 'slam'; // (the last robber gets the spin-and-chop, in slow motion)
     }
     this.startAttack(name, target);
   }
   startAttack(name, target) {
-    this.state = 'attack'; this.move = MOVES[name]; this.target = target; this.t = 0; this.hitDone = false;
+    this.state = 'attack'; this.move = MOVES[name]; this.moveKey = name; this.nextAtkAt = G.simTime + ATK_GAP; this.target = target; this.t = 0; this.hitDone = false;
+    const au = this.authAtk && this.authAtk[name]; this.auth = au && this.body && this.body.clips[au.clip] ? au : null; this.atkHit = this.auth ? new Set() : null;
+    if (this.auth) this.move = { ...this.move, dur: au.dur, hit: au.win[0][0] / au.dur }; // (timing from his frames)
     this.phaseName = target && target.pos.distanceTo(this.pos) > 1.55 ? 'travel' : 'strike';
     this.travelT = 0;
     if (this.phaseName === 'strike') this.swish();
@@ -241,7 +265,7 @@ export class Player {
     this.state = 'sweep'; this.t = 0; this.kicked = false;
     // alternate a front kick and a spinning high kick
     this.kickDef = this.body ? (this.kickN++ % 2 === 0 ? { name: 'Kick', t1: 0.72, hit: 0.36 } : { name: 'HighKick', t1: 0.78, hit: 0.27 }) : { name: null, t1: 0.46, hit: 0.18 };
-    this.kickTarget = this.pickTarget(this.prefDir(), Math.min(3.2, G.ps.reach));
+    this.kickTarget = this.pickTarget(this.prefDir(), 3.2);
     if (!SFX.sample('kickCloth', 0.75, 1, 0.1)) SFX.play('whoosh', 1.1); // (the trousers snapping, hit or miss)
   }
   tryDodge() {
@@ -270,7 +294,7 @@ export class Player {
     if (G.tutAllow && !G.tutAllow.includes('special')) return false;
     const justStarted = chord && (this.state === 'attack' || this.state === 'sweep') && this.t < 0.3 && !this.hitDone; // (the other mouse button of the pair already set off a swing)
     if (G.specialCharges < 1 || !(this.canAct() || this.cancelable() || justStarted)) return false;
-    let target = this.pickTarget(this.prefDir(), Math.min(3.5, G.ps.reach)); // close range only
+    let target = this.pickTarget(this.prefDir(), 3.5); // close range only
     if (!target && G.introTarget && !G.introTarget.ko && G.introTarget.pos.distanceTo(this.pos) < 4) target = G.introTarget; // (the lobby's opening takedown)
     if (!target) return false;
     G.specialCharges--; G.stats.specials++;
@@ -325,7 +349,9 @@ export class Player {
         if (mi.lengthSq() > 0) faceDir = mi;
         else if (G.leaving) faceDir = V(0, 0, 1); // turn round to face the lobby as the doors close
         if (G.autoFace) { const d = V(G.autoFace.x - this.pos.x, 0, G.autoFace.z - this.pos.z); if (d.lengthSq() > 0.01) faceDir = d.normalize(); } // (a scripted moment: keep looking at someone)
-        else if (G.input.mouseActive && G.anyAggro() && !G.intro && !G.cine) { const d = _v1.copy(G.mouseGround).sub(this.pos).setY(0); if (d.lengthSq() > 1) faceDir = d.normalize().clone(); }
+        else if (mi.lengthSq() === 0 && G.anyAggro() && !G.intro && !G.cine) { // standing his ground: square up to one robber (never the gap between two)
+          const e = this.faceFoe(); if (e) faceDir = _v1.copy(e.pos).sub(this.pos).setY(0).normalize().clone();
+        } else this.lookFoe = null; // (on the move he looks where he's going)
         const moving = mi.lengthSq() > 0 && this.vel.length() > 0.5;
         if (!this.cleaning || this.tool !== 'mop') this.wasMopping = false;
         if (this.cleaning) this.doClean(dt, pose);
@@ -342,17 +368,18 @@ export class Player {
         if (this.body && this.body.clips.Dodge) { // dodge roll (Yusuf's Mixamo clip): dive, roll over, back on his feet
           const dur = DODGE.span / DODGE.rate, u = Math.min(1, this.t / dur);
           this.rollU = u;
-          const sp = 7.15 * G.ps.dodge * smooth(clamp(u / 0.04, 0, 1)) * (1 - smooth(clamp((u - 0.62) / 0.33, 0, 1)));
+          const sp = 7.15 * G.ps.dodge * G.ps.rollSpd * smooth(clamp(u / 0.04, 0, 1)) * (1 - smooth(clamp((u - 0.62) / 0.33, 0, 1)));
           want.copy(this.dodgeDir).multiplyScalar(sp); speedCap = 20;
           this.invuln = u < 0.8;
           pose.c.set(0.0, 1.15, 0.26); pose.d.set(1, 0.12, 0.05).normalize(); pose.tw = 0; pose.ln = 0; // mop held across his chest as he rolls
           faceDir = this.dodgeDir;
-          disturbPapers(this.pos.x, this.pos.z, 1.1, 3.5);
+          disturbPapers(this.pos.x, this.pos.z, 1.1, 3.5, true);
           // rolling into a robber's legs takes him down
           for (const e of G.enemies) {
-            if (e.ko || e.down || this.slid.has(e) || u < 0.1 || u > 0.7) continue;
-            if (e.pos.distanceTo(this.pos) < 1.1) {
-              this.slid.add(e); e.trip(this.dodgeDir.clone()); G.addCombo(1); G.stats.hits++;
+            if (!G.ps.bowl || e.ko || e.down || this.slid.has(e) || u < 0.1 || u > 0.7) continue; // (only with the Dodge upgrade)
+            if (!G.ps.bowlAll && this.slid.size) continue; // (Power Roll: one robber per roll; Strike!: the lot)
+            if (e.pos.distanceTo(this.pos) < (G.ps.bowlAll ? 1.6 : 1.1)) {
+              this.slid.add(e); if (e.isBoss) e.trip(this.dodgeDir.clone()); else e.knockout(this.dodgeDir.clone(), 5); G.addCombo(1); G.stats.hits++;
               G.hitstop = Math.max(G.hitstop, 0.04); G.shake = Math.max(G.shake, 0.3); SFX.play('kick');
               floatText(pick(['ROLLED OVER!', 'TAKEN OUT!', 'BOWLED OVER!']), e.pos.clone().setY(1.7), 'onoma', 0.7);
             }
@@ -372,14 +399,14 @@ export class Player {
         pose.c.set(0.0, 1.22, 0.32); pose.d.set(1, 0.18, 0.08).normalize(); pose.tw = 0; pose.ln = 0;
         legFK = { t: [-0.2 * L, -0.08 * L], k: [0.1 * L, 0.32 * L], s: [0.1 * L, -0.1 * L] }; // both legs out in front, feet first
         faceDir = this.dodgeDir;
-        disturbPapers(this.pos.x, this.pos.z, 1.4, 5);
+        disturbPapers(this.pos.x, this.pos.z, 1.4, 5, true);
         cleanAt(this.pos.x, this.pos.z, 0.7, Math.min(1, dt * 6));
         if (L > 0.5 && Math.random() < 0.5) spark(this.pos.x + this.dodgeDir.x * 0.6, 0.05, this.pos.z + this.dodgeDir.z * 0.6, 1, 0xffffff, 1.5, 0.35, 0.09);
         // slide tackle: trip any robber in the way
         for (const e of G.enemies) {
-          if (e.ko || e.down || this.slid.has(e) || L < 0.4) continue;
-          if (e.pos.distanceTo(this.pos) < 1.15) {
-            this.slid.add(e); e.trip(this.dodgeDir.clone()); G.addCombo(1); G.stats.hits++;
+          if (!G.ps.bowl || e.ko || e.down || this.slid.has(e) || L < 0.4 || (!G.ps.bowlAll && this.slid.size)) continue;
+          if (e.pos.distanceTo(this.pos) < (G.ps.bowlAll ? 1.6 : 1.15)) {
+            this.slid.add(e); if (e.isBoss) e.trip(this.dodgeDir.clone()); else e.knockout(this.dodgeDir.clone(), 5); G.addCombo(1); G.stats.hits++;
             G.hitstop = Math.max(G.hitstop, 0.04); G.shake = Math.max(G.shake, 0.3); SFX.play('kick');
             floatText(pick(['SLIDE TACKLE!', 'TAKEN OUT!', 'WHOOSH!']), e.pos.clone().setY(1.7), 'onoma', 0.7);
           }
@@ -393,7 +420,9 @@ export class Player {
         if (this.t > 0.32) this.state = 'move';
         break;
       }
-      case 'special': this.doSpecial(dt, want, pose); speedCap = 30; faceDir = this.target ? _v3.copy(this.target.pos).sub(this.pos).setY(0).normalize() : null; break;
+      case 'special': this.doSpecial(dt, want, pose); speedCap = 30; faceDir = this.target ? _v3.copy(this.target.pos).sub(this.pos).setY(0).normalize() : null;
+        if (faceDir && this.takedownImpact && this.takedownImpact.ang) faceDir.applyAxisAngle(_UP, -this.takedownImpact.ang);
+        break;
       case 'dead': {
         const k = Math.min(1, this.t / 0.6);
         bodyQ = new THREE.Quaternion().setFromAxisAngle(V(1, 0, 0), -Math.PI / 2 * smooth(k));
@@ -418,7 +447,8 @@ export class Player {
     }
     pushChairs(this.pos, this.r, this.vel, this.state === 'dodge' ? 2 : 1);
     const spd = this.vel.length();
-    if (spd > 3.5) disturbPapers(this.pos.x, this.pos.z, 0.55, spd * 0.35);
+    if (spd > 3.5) disturbPapers(this.pos.x, this.pos.z, 0.55, spd * 0.35, true);
+    disturbJunk(this.pos.x, this.pos.z, 0.42, spd, this.vel.x / (spd + 0.01) * 0.5, this.vel.z / (spd + 0.01) * 0.5); // (cups underfoot skitter away)
 
     // facing
     if (faceDir && faceDir.lengthSq() > 0) this.yaw = dampAngle(this.yaw, Math.atan2(faceDir.x, faceDir.z), this.state === 'attack' ? 30 : this.state === 'dodge' ? 24 : 14, dt);
@@ -462,7 +492,10 @@ export class Player {
     }, dt);
     if (barrow) this.pushBarrow(dt);
     if (this.body) {
-      this.body.write(this.state === 'dead' ? 0.2 : 1, this.authW || 0); this.body.placeAuthoredMop(this.rig.weapon, this.rig.root, this.authW || 0);
+      if (this.body.authOne) { this.body.write(1, 1); this.placeAuthMop(this.state === 'attack' ? this.auth.mop : this.takedownMop, this.t); }
+      else { this.body.write(this.state === 'dead' ? 0.2 : 1, this.authW || 0); this.body.placeAuthoredMop(this.rig.weapon, this.rig.root, this.authW || 0); }
+      this.mopHandoff(dt);
+      this.body.updateCloth(dt);
       // chin up a touch while he stands, walks and runs (the clips have him eyeing the floor)
       this.lookUpA = damp(this.lookUpA || 0, this.state === 'move' && !this.cleaning ? 0.15 : 0, 6, dt);
       this.body.lookUp(this.lookUpA);
@@ -532,26 +565,107 @@ export class Player {
     switch (this.state) {
       case 'attack': {
         if (this.phaseName === 'travel') { loco.idle = loco.walk = 0; loco.run = 1; loco.runTS = clamp(G.ps.lunge / RUN_CLIP, 1, 2.2); loco.stride = STRIDE; break; }
-        const seg = ATTACK_CLIPS[this.move.name === 'finisher' ? 'spin' : Object.keys(MOVES).find(k => MOVES[k] === this.move)];
+        if (this.auth) { one = { name: this.auth.clip, time: Math.min(this.t, this.auth.dur - 1e-3), fade: 0.04 }; break; }
+        const seg = ATTACK_CLIPS[this.move.name === 'finisher' ? 'spin' : this.moveKey];
         if (seg) one = { name: seg[0], time: seg[1] + clamp(this.t / this.move.dur, 0, 1) * (seg[2] - seg[1]), fade: 0.05 };
         break;
       }
       case 'sweep': one = { name: this.kickDef.name, time: this.t * Math.min(1.25, G.ps.atk), fade: 0.05 }; break;
       case 'hurt': one = { name: 'TakeDamage', time: 0.05 + this.t * 1.5, fade: 0.04 }; break;
-      case 'special': one = { name: 'Finisher', time: clamp(this.t / 0.75, 0, 1) * 0.9, fade: 0.05 }; break;
+      case 'special': one = this.body.clips.Takedown ? { name: 'Takedown', time: Math.min(this.t, this.body.clips.Takedown.duration - 1e-3), fade: 0.04 } : { name: 'Finisher', time: clamp(this.t / 0.75, 0, 1) * 0.9, fade: 0.05 }; break;
       case 'dead': one = { name: this.deathClip || 'Deathanim', time: this.t, fade: 0.12 }; armW = 1; break;
       case 'dodge':
         if (this.body.clips.Dodge) one = { name: 'Dodge', time: (DODGE.start + (this.rollU || 0) * DODGE.span) % this.body.clips.Dodge.duration, fade: 0.035 };
         else w = legW = 1 - (this.slideL || 0);
         break;
     }
+    this.body.authOne = (this.state === 'special' && !!this.takedownMop && !!this.body.clips.Takedown) || (this.state === 'attack' && this.phaseName === 'strike' && !!this.auth); // (the whole body, arms included, straight from the authored takedown)
     const clip = this.body.update(dt, loco, one);
     // authored idle: arms (and the mop) come straight from Yusuf's Blender idle while standing, walking AND running
     // (legs from the walk / run cycle); not while mopping, fighting or sliding
+    const authFade = !!this.body.one && !this.body.authOne && (this.body.one.name === 'Takedown' || Object.values(this.authAtk || {}).some(a => a.clip === this.body.one.name));
+    this.body.authFade = authFade; // (one of Yusuf's moves easing into the idle: arms blend clip to clip, never via the old ready pose)
+    if (authFade && this.state === 'move') this.authBlend = 1; // (straight into the idle hold, no detour)
     this.authBlend = damp(this.authBlend ?? 1, (this.state === 'move' && this.tool !== 'barrow' && (!this.cleaning || this.body.sweep)) ? 1 : 0, 12, dt);
-    this.authW = (this.body.mopT || this.body.sweep) ? this.authBlend * (this.body.one ? 1 - this.body.oneW : 1) : 0;
+    this.authW = (this.body.mopT || this.body.sweep) ? this.authBlend * (this.body.one && !authFade ? 1 - this.body.oneW : 1) : 0;
     armW = Math.max(armW, this.authW);
     return { clip, w, legW, armW };
+  }
+  // Yusuf's takedown: during its active frames, anyone the mop head comes near is knocked out (once each)
+  doTakedown(dt, want, pose) {
+    const tg = this.target, k = this.t, W = this.takedownWin, last = W[W.length - 1][1];
+    if (k < dt + 1e-4 || !this.tkHit) this.tkHit = new Set();
+    if (tg && !tg.ko) { // the one he goes for is caught where he stands (no backing off out of the swing)
+      if (!this.tkPin || this.tkPin.e !== tg) this.tkPin = { e: tg, p: tg.pos.clone() };
+      tg.pos.copy(this.tkPin.p); tg.vel.set(0, 0, 0);
+    }
+    if (tg && k < W[0][1]) { // lunge in, right through the first swing: stop about a metre off, where it comes through
+      const to = _v1.copy(tg.pos).sub(this.pos).setY(0), d = to.length();
+      if (d > 1.0) want.copy(to.normalize()).multiplyScalar(Math.min(9, (d - 1.0 + 0.2) * 8));
+    }
+    sampleKeys(MOVES.slam.keys, Math.min(1, k / 0.55), pose); this.spinAng = 0;
+    const live = W.some(([a, b]) => k >= a && k <= b);
+    if (live) {
+      const w = this.rig.weapon, len = w.userData.len || 1.3;
+      w.updateMatrixWorld(true);
+      const head = w.localToWorld(_v2.set(0, len / 2 + 0.1, 0)); // (the strands)
+      for (const e of G.enemies) {
+        if (e.ko || this.tkHit.has(e)) continue;
+        if (Math.hypot(e.pos.x - head.x, e.pos.z - head.z) > 0.85 || head.y > 2.2) continue;
+        this.tkKO(e, head);
+      }
+    }
+    if (k > last && tg && !tg.ko && !this.tkHit.has(tg) && tg.pos.distanceTo(this.pos) < 3) this.tkKO(tg, tg.pos.clone().setY(0.4)); // (never a wasted takedown: the one he went for goes down)
+    if (k > 0.75) { this.state = 'move'; G.cinematic = 0; this.invuln = false; this.tkHit = null; this.tkPin = null; }
+  }
+  tkKO(e, at) {
+    this.tkHit.add(e);
+    const dir = _v3.copy(e.pos).sub(this.pos).setY(0); if (dir.lengthSq() < 1e-4) dir.set(Math.sin(this.yaw), 0, Math.cos(this.yaw)); dir.normalize();
+    if (e.isBoss) e.takedown(dir.clone()); else e.knockout(dir.clone(), 6, false, true);
+    G.addCombo(1); G.stats.hits++;
+    G.hitstop = Math.max(G.hitstop, this.hitDone ? 0.06 : 0.12); G.shake = Math.max(G.shake, this.hitDone ? 0.6 : 1.0);
+    if (!SFX.sample('finisherHit', this.hitDone ? 0.75 : 0.95, 1, 0.08)) SFX.play('heavy');
+    droplets(at.x, 0.3, at.z, 22); spark(at.x, Math.max(0.2, at.y), at.z, 24, 0xffffff, 6, 0.3, 0.1);
+    this.hitDone = true;
+  }
+  // the takedown's mop, exactly where it was in Blender (stored relative to his left hand, sampled at 60 Hz)
+  // coming out of a strike or the takedown, the mop eases from where the move left it back into his idle grip
+  // (Yusuf's moves: it stays fixed in the hand that held it while the arms blend back, so it never leaves his hands)
+  mopHandoff(dt) {
+    const w = this.rig.weapon, st = this.state, prev = this.hoState, root = this.rig.root;
+    if (!this.hoP) { this.hoP = new THREE.Vector3(); this.hoQ = new THREE.Quaternion(); }
+    if ((prev === 'attack' || prev === 'special') && st === 'move' && w.parent === root)
+      { this.handoff = this.hoAuth ? { hand: this.hoAuth.hand, rel: this.hoAuth.rel.clone() } : { p: this.hoP.clone(), q: this.hoQ.clone(), t: 0 }; this.authBlend = 1; }
+    if (st !== 'move') this.handoff = null;
+    const h = this.handoff;
+    if (h && h.rel) {
+      const H = this.body.B[h.hand], e0 = this.body.one && this.body.authFade ? 1 - this.body.oneW : 1, e = e0 * e0 * (3 - 2 * e0);
+      H.updateMatrixWorld(true);
+      _tkM.copy(H.matrixWorld).multiply(h.rel).decompose(_tkP, _tkQ, _tkS);
+      root.worldToLocal(_tkP); _tkQ.premultiply(root.getWorldQuaternion(_tkQ2).invert());
+      w.position.lerpVectors(_tkP, w.position, e); w.quaternion.slerpQuaternions(_tkQ, w.quaternion, e); w.updateMatrixWorld(true);
+      if (e0 >= 1) this.handoff = null;
+    } else if (h) {
+      h.t += dt; const k = Math.min(1, h.t / 0.22), e = k * k * (3 - 2 * k);
+      w.position.lerpVectors(h.p, w.position, e); w.quaternion.slerpQuaternions(h.q, w.quaternion, e); w.updateMatrixWorld(true);
+      if (k >= 1) this.handoff = null;
+    }
+    this.hoP.copy(w.position); this.hoQ.copy(w.quaternion); this.hoState = st;
+    if (!this.body.authOne) this.hoAuth = null;
+  }
+  placeAuthMop(m, tt) {
+    const H = this.body.B[m.hand]; if (!H) return;
+    const n = m.times.length, t = Math.min(tt, m.times[n - 1]); let i = 0; while (i < n - 2 && m.times[i + 1] < t) i++;
+    const k = clamp((t - m.times[i]) / Math.max(1e-6, m.times[i + 1] - m.times[i]), 0, 1);
+    _tkP.fromArray(m.t, i * 3).lerp(_tkP2.fromArray(m.t, i * 3 + 3), k);
+    _tkQ.fromArray(m.q, i * 4).slerp(_tkQ2.fromArray(m.q, i * 4 + 4), k);
+    const s = m.s[i] + (m.s[i + 1] - m.s[i]) * k;
+    H.updateMatrixWorld(true);
+    _tkM.compose(_tkP, _tkQ, _tkS.set(s, s, s)).premultiply(H.matrixWorld).decompose(_tkP, _tkQ, _tkS);
+    const w = this.rig.weapon, root = this.rig.root;
+    root.worldToLocal(_tkP); _tkQ.premultiply(root.getWorldQuaternion(_tkQ2).invert());
+    w.position.copy(_tkP); w.quaternion.copy(_tkQ); w.updateMatrixWorld(true);
+    (this.hoAuth = this.hoAuth || { rel: new THREE.Matrix4() }).hand = m.hand; this.hoAuth.rel.copy(H.matrixWorld).invert().multiply(w.matrixWorld); // (for the hand-off into the idle)
   }
   dropMop() {
     const wpn = this.rig.weapon; if (wpn.parent !== this.rig.root) return;
@@ -594,10 +708,10 @@ export class Player {
     if (spd > 0.3) {
       const front = barrowFront(_f0);
       for (const e of G.enemies) {
-        if (!e.ko || e.gone || e.loaded || e.sucked || e.state === 'flying' || (e.state === 'dying' && e.t < 1.6)) continue;
+        if (e.isBoss || !e.ko || e.gone || e.loaded || e.sucked || e.state === 'flying' || (e.state === 'dying' && e.t < 1.6)) continue;
         const c = e.rig.chest.getWorldPosition(_s0);
         if (Math.hypot(c.x - front.x, c.z - front.z) < 0.95 || Math.hypot(e.pos.x - front.x, e.pos.z - front.z) < 0.85) {
-          e.loadInto(G.barrow); if (!SFX.sample('pickupBody', 0.95, 1, 0.08)) SFX.play('thud'); G.shake = Math.max(G.shake, 0.15);
+          e.loadInto(G.barrow); if (!SFX.sample('pickupBody', 1.7, 1, 0.08)) SFX.play('thud'); // (a whole robber: louder than a rifle) G.shake = Math.max(G.shake, 0.15);
           floatText(pick(['HUP!', 'IN YOU GO', 'ONE MORE']), e.pos.clone().setY(1.2), 'onoma', 0.7);
         }
       }
@@ -606,7 +720,7 @@ export class Player {
         const c = chairs[i]; if (!c.rifle || c.sucked) continue;
         if (Math.hypot(c.pos.x - front.x, c.pos.z - front.z) < 0.9) {
           chairs.splice(i, 1); for (const sh of c.shadows) sh.visible = false;
-          goldTint(c.obj, 0); loadRifle(c.obj); SFX.play('kick', 0.6);
+          goldTint(c.obj, 0); loadRifle(c.obj); if (!SFX.sample('pickRifle', 0.48, 1, 0.06)) SFX.play('kick', 0.6);
         }
       }
     }
@@ -694,6 +808,7 @@ export class Player {
         if (SUCKED.paper) any = SFX.sample('suckPaper', 0.67, 1, 0.035) || any;
         if (SUCKED.glass) any = SFX.sample('suckGlass', 0.6, 1, 0.035) || any;
         if (SUCKED.leaf) any = SFX.sample('suckLeaf', 0.71, 1, 0.035) || any;
+        if (SUCKED.cup) any = SFX.sample('cupHit', 0.7, 1.15, 0.05) || any; // (a cup popping up the hose: Yusuf's cup sound, a touch higher)
         if (!any) SFX.play('collect');
       }
       // (dropped rifles are too big for it: they go in the wheelbarrow, with the robbers)
@@ -724,7 +839,7 @@ export class Player {
       this.squeakT -= dt;
       if (this.squeakT <= 0) {
         // only squeak when the mop is actually working on something (dirt, blood)
-        if (somethingToClean(cx, cz, 1.2)) { this.squeakT = rand(0.25, 0.6); SFX.play('squeak'); if (Math.random() < 0.5) spark(head.x, 0.1, head.z, 2, 0xffffff, 1.2, 0.5, 0.08); }
+        if (somethingToClean(cx, cz, 1.2)) { this.squeakT = rand(0.25, 0.6); if (Math.random() < 0.5) spark(head.x, 0.1, head.z, 2, 0xffffff, 1.2, 0.5, 0.08); }
         else this.squeakT = 0.12;
       }
     }
@@ -744,6 +859,7 @@ export class Player {
     }
     const T = this.t / m.dur;
     sampleKeys(m.keys, Math.min(1, T), pose);
+    if (this.auth) return this.doAuthAttack(dt, want, T);
     if (tg && !tg.ko) {
       const to = _v1.copy(tg.pos).sub(this.pos).setY(0); const d = to.length();
       if (T < m.hit && d > 1.25) want.copy(to.normalize()).multiplyScalar(Math.min(8, (d - 1.2) * 12));
@@ -761,8 +877,35 @@ export class Player {
     if (this.t >= m.dur) { this.state = 'move'; }
   }
 
-  mopEnvHits() {
-    const head = this.rig.weaponPoint(0.45, V());
+  // Yusuf's authored swings: whoever the mop head passes near during his hit frames gets hit (once each)
+  doAuthAttack(dt, want, T) {
+    const m = this.move, tg = this.target, W = this.auth.win, k = this.t, last = W[W.length - 1][1];
+    if (tg && !tg.ko && k < W[0][1]) { // step in so the swing comes through him
+      const to = _v1.copy(tg.pos).sub(this.pos).setY(0), d = to.length();
+      const st = this.auth.stop; /* (the butt jab reaches further than the swing) */
+      if (d > st + 0.05) want.copy(to.normalize()).multiplyScalar(Math.min(8, (d - st) * 12));
+    }
+    const live = W.some(([a, b]) => k >= a && k <= b + 0.02);
+    if (live) {
+      this.mopEnvHits(this.auth.tip);
+      const w = this.rig.weapon, len = w.userData.len || 1.3;
+      w.updateMatrixWorld(true);
+      const head = w.localToWorld(_v2.set(0, this.auth.tip > 0 ? len / 2 + 0.1 : -len / 2, 0)); /* (the strands, or the butt of the stick) */
+      const pts = [head.y < 2.2 ? head : null]; /* (the mop, plus any limbs that strike too: a back kick) */
+      for (const b of this.auth.bones) { const B = this.body.B[b]; if (B) pts.push(B.getWorldPosition(new THREE.Vector3())); }
+      for (const e of G.enemies) {
+        if (e.ko || this.atkHit.has(e)) continue;
+        if (!pts.some((p, i) => p && Math.hypot(e.pos.x - p.x, e.pos.z - p.z) < (i ? 0.75 : 0.8))) continue;
+        this.atkHit.add(e); this.hitEnemy(e, m, e !== tg); this.hitDone = true;
+      }
+    }
+    if (k > last && tg && !tg.ko && !this.atkHit.has(tg) && tg.pos.distanceTo(this.pos) < 2.0) { this.atkHit.add(tg); this.hitEnemy(tg, m); this.hitDone = true; } // (the one he swung at doesn't slip through the gaps)
+    if (k > last) this.hitDone = true;
+    if (this.t >= m.dur) { this.state = 'move'; this.auth = null; }
+  }
+
+  mopEnvHits(u = 0.45) {
+    const head = this.rig.weaponPoint(u, V());
     const dir = this.headVel.clone().setY(0); const sp = dir.length(); if (sp < 2) return; dir.normalize();
     for (const d of G.destructibles) {
       if (d.broken || !d.box || this.envHit.has(d)) continue;
@@ -773,10 +916,12 @@ export class Player {
       if (head.y < s.y + 0.25 && pointInBox(s, head.x, head.z, 0.05)) { this.envHit.add(s); paperBurst(head.x, s.y + 0.1, head.z, 6, dir.x * 0.5, dir.z * 0.5, 2.4); SFX.play('thud'); }
     }
     for (const c of chairs) if (!this.envHit.has(c) && c.pos.distanceTo(head.clone().setY(0)) < 0.55) { this.envHit.add(c); knockChair(c, dir, 4); }
+    if (head.y < 0.4) disturbJunk(head.x, head.z, 0.45, 5, dir.x, dir.z); // (a low swing sends cups flying)
   }
 
   hitEnemy(e, m, splash = false) {
     const dir = _v2.copy(e.pos).sub(this.pos).setY(0).normalize().clone();
+    if (e.isBoss && e.blockHit(dir)) return; // (the boss blocks: kick his guard open first)
     const groundTakedown = e.down && !e.ko;
     let ko = false;
     if (groundTakedown) {
@@ -829,9 +974,12 @@ export class Player {
         const to = e.pos.clone().sub(this.pos).setY(0), dist = to.length();
         if (dist > 1.9 || to.normalize().dot(fwd) < 0.45) continue;
         const dir = e.pos.clone().sub(this.pos).setY(0).normalize();
-        e.hp -= 0.5 * G.ps.power;
-        if (e.hp <= 0.001) e.knockout(dir, 6 * (0.8 + 0.2 * G.ps.power));
-        else { e.trip(dir); e.vel.copy(dir).multiplyScalar(5.5 * (0.8 + 0.2 * G.ps.power)); }
+        if (e.isBoss) e.kicked(dir); // (a kick breaks his guard)
+        else {
+          e.hp -= 0.5 * G.ps.power;
+          if (e.hp <= 0.001) e.knockout(dir, 6 * (0.8 + 0.2 * G.ps.power));
+          else { e.trip(dir); e.vel.copy(dir).multiplyScalar(5.5 * (0.8 + 0.2 * G.ps.power)); }
+        }
         G.addCombo(1); G.stats.hits++; landed = true;
         G.hitstop = Math.max(G.hitstop, 0.075); G.shake = Math.max(G.shake, 0.5);
         const p = e.pos.clone().setY(1.1); spark(p.x, p.y, p.z, 10, 0xffffff, 4, 0.2, 0.1); flash(p.x, p.y, p.z, 1.3, 0xfff0d0, 0.06);
@@ -840,7 +988,7 @@ export class Player {
       if (landed && !SFX.sample('kickHit', 0.9, 1, 0.05)) SFX.play('heavy'); // (no thump on a miss: just the cloth)
       for (const c of chairs) if (c.pos.distanceTo(foot) < 0.8) knockChair(c, fwd, 6);
       for (const d of G.destructibles) if (!d.broken && d.box && d.kind !== 'glass' && sphereBox(d.box, foot.clone().setY(0.9), 0.3)) hitDestructible(d, 'body', foot.clone().setY(0.9), fwd);
-      disturbPapers(foot.x, foot.z, 1.2, 3);
+      disturbPapers(foot.x, foot.z, 1.2, 3, true);
     }
     if (this.t >= dur) { this.state = 'move'; }
   }
@@ -856,18 +1004,21 @@ export class Player {
   doSpecial(dt, want, pose) {
     const tg = this.target;
     const k = this.t;
+    if (this.body && this.body.clips.Takedown && this.takedownWin) return this.doTakedown(dt, want, pose);
+    const imp = this.body && this.body.clips.Takedown && this.takedownImpact; // (the authored takedown: hit when and where its mop head meets the floor)
+    const stopAt = imp ? Math.max(0.7, imp.reach + 0.05) : 1.3;
     if (tg && !this.hitDone) {
       const to = _v1.copy(tg.pos).sub(this.pos).setY(0); const d = to.length();
-      if (d > 1.3) want.copy(to.normalize()).multiplyScalar(Math.min(9, d * 8));
+      if (d > stopAt) want.copy(to.normalize()).multiplyScalar(Math.min(9, (d - stopAt + 0.2) * 8));
     }
     const T = Math.min(1, k / 0.55);
     sampleKeys(MOVES.slam.keys, T, pose);
     this.spinAng = 0;
-    if (!this.hitDone && T >= 0.5) {
+    if (!this.hitDone && (imp ? k >= imp.t : T >= 0.5)) {
       this.hitDone = true;
       if (tg && !tg.ko) {
         const dir = _v2.copy(tg.pos).sub(this.pos).setY(0).normalize().clone();
-        tg.knockout(dir, 6, false, true);
+        if (tg.isBoss) tg.takedown(dir); else tg.knockout(dir, 6, false, true);
         G.addCombo(1); G.stats.hits++;
       }
       for (const e of G.enemies) if (!e.ko && e !== tg && e.pos.distanceTo(this.pos) < 3.0) { e.trip(e.pos.clone().sub(this.pos).setY(0).normalize()); G.addCombo(1); }
@@ -934,8 +1085,12 @@ export class Enemy {
     // body axis and centre in his own root space
     const h = root.worldToLocal(this.rig.head.getWorldPosition(new THREE.Vector3())), b = root.worldToLocal(this.rig.body.getWorldPosition(new THREE.Vector3()));
     const ax = h.clone().sub(b).setY(0); if (ax.lengthSq() < 1e-4) ax.set(0, 0, 1); ax.normalize();
-    const c = h.clone().add(b).multiplyScalar(0.5);
+    let c = h.clone().add(b).multiplyScalar(0.5);
     const n = barrow.load.length, slot = barrowSlot('body'); barrow.load.push(this);
+    if (n === 0) { // the first one goes in folded: seat down in the tray, shoulders and legs up over the rims (a V)
+      this.vFold(ax);
+      c = b.clone(); slot.set(0, 0.47, 0.04); barrow.stackH = (barrow.stackH || 0) + 0.06; // (the next ones lie across on top of him)
+    }
     const yawRel = Math.PI / 2 - Math.atan2(ax.x, ax.z) + (n % 2 ? Math.PI : 0); // lying across the tray, alternating head ends
     const qRel = new THREE.Quaternion().setFromAxisAngle(_UP, yawRel);
     const s = root.scale.x * 0.92;
@@ -943,6 +1098,23 @@ export class Enemy {
     this.loaded = { t: 0, barrow, qRel, pRel, s, p0: root.position.clone(), q0: root.quaternion.clone(), s0: root.scale.x };
     this.state = 'loaded'; this.releaseToken();
     this.blob.visible = false; this.ring.visible = false;
+  }
+  // fold the (lying) body at the hips: the torso and both thighs swing up about the axis across his body
+  vFold(ax) {
+    const rig = this.rig, root = rig.root; root.updateMatrixWorld(true);
+    const rootQ = root.getWorldQuaternion(new THREE.Quaternion()), perp = new THREE.Vector3().crossVectors(ax, _UP).normalize();
+    const axisW = perp.clone().applyQuaternion(rootQ);
+    const local = o => root.worldToLocal(o.getWorldPosition(new THREE.Vector3()));
+    const fold = (joint, tip, ang) => { // turn joint so that `tip` (a child) rises by about `ang`
+      const d = local(tip).sub(local(joint)); d.y = 0; if (d.lengthSq() < 1e-6) return;
+      let a = ang; if (d.clone().applyAxisAngle(perp, a).y < 0) a = -a;
+      const pW = joint.parent.getWorldQuaternion(new THREE.Quaternion()), R = new THREE.Quaternion().setFromAxisAngle(axisW, a);
+      joint.quaternion.premultiply(pW.clone().invert().multiply(R).multiply(pW));
+      joint.updateMatrixWorld(true);
+    };
+    fold(rig.spine, rig.head, 0.8);
+    for (let i = 0; i < 2; i++) fold(rig.hip[i], rig.foot[i], 0.95);
+    root.updateMatrixWorld(true);
   }
   updateLoaded(dt) {
     const L0 = this.loaded, root = this.rig.root, g = L0.barrow.group;
@@ -1000,10 +1172,10 @@ export class Enemy {
     this.ko = true; this.down = true; this.aggro = true; this.hp = 0;
     G.stats.kos++; SFX.play('ko');
     this.state = ground ? 'ko' : 'flying'; this.t = 0;
-    this.vel.copy(dir).multiplyScalar(force * (ground ? 0.3 : 1.2));
+    this.vel.copy(dir).multiplyScalar(force * (ground ? 0.3 : 0.65)); // (half the flight it used to have: still a launch, not a long trip across the room)
     // ordinary knockouts play Yusuf's death animation (he staggers back and falls); kicks, finishers and takedowns still launch him
     if (this.anim && !ground && !launch && force < 4.5) { this.state = 'dying'; this.vel.copy(dir).multiplyScalar(0.6 + force * 0.25); this.dieYaw = Math.atan2(-dir.x, -dir.z); }
-    this.vy = ground ? 0 : (launch ? 5.5 : 2.6 + force * 0.25); this.y = 0;
+    this.vy = ground ? 0 : (launch ? 4.0 : 2.0 + force * 0.18); this.y = 0;
     this.spinAxis = V(dir.z, 0, -dir.x).normalize();
     // fall on back if hit from the front
     const fwd = V(Math.sin(this.yaw), 0, Math.cos(this.yaw));
@@ -1082,7 +1254,7 @@ export class Enemy {
         want.copy(dirP).multiplyScalar(radial).add(tang);
         if (want.lengthSq() > 1e-4) want.normalize().multiplyScalar(dist > 10 ? 3.6 : brawl && radial > 0 ? 3.0 : 1.8);
         // something in the way (a glass partition, desks)? walk round it instead of into it
-        if (dist > 1.6 && pathBlocked(this.pos.x, this.pos.z, P.pos.x, P.pos.z) && (radial > 0 || brawl || !this.hasLOS(P.pos)) && flowDir(this.pos.x, this.pos.z, _nav)) want.copy(_nav).multiplyScalar(dist > 10 ? 3.6 : 2.6);
+        if ((dist > 1.6 || !canReach(this.pos, P.pos)) && pathBlocked(this.pos.x, this.pos.z, P.pos.x, P.pos.z) && (radial > 0 || brawl || !this.hasLOS(P.pos)) && flowDir(this.pos.x, this.pos.z, _nav)) want.copy(_nav).multiplyScalar(dist > 10 ? 3.6 : 2.6);
         if (this.tutWalk) { // (the tutorial walks him in through the fire doors)
           const d = V(this.tutWalk.x - this.pos.x, 0, this.tutWalk.z - this.pos.z);
           if (d.length() < 0.4) this.tutWalk = null; else { want.copy(d).setLength(2.6); faceTo = want.clone(); }
@@ -1095,9 +1267,10 @@ export class Enemy {
         }
         // request attack token from the director
         // (only one robber takes aim at a time, with a breather after each burst)
-        const gunFree = dist < 2.6 ? true : (this.role === 'brawler' && dist < 8) ? false : (!G.enemies.some(o => o !== this && !o.ko && (o.state === 'aim' || o.state === 'fire')) && G.time - (G.lastBurstEnd ?? -9) > 1.4); // (brawlers would rather come and club him)
+        const gunFree = dist < 2.6 ? true : (this.role === 'brawler' && dist < 8) ? false : (!G.enemies.some(o => o !== this && !o.ko && (o.state === 'aim' || o.state === 'fire')) && G.time - (G.lastBurstEnd ?? -9) > 0.85); // (brawlers would rather come and club him)
         if (this.cool <= 0 && !this.tutNoAttack && gunFree && G.requestAttack(this)) {
-          if (dist < 2.6) { this.state = 'melee'; this.t = 0; SFX.play('alert'); }
+          if (dist < 2.6 && canReach(this.pos, P.pos)) { this.state = 'melee'; this.t = 0; SFX.play('alert'); } // (never through glass or a wall)
+          else if (dist < 2.6) G.attackers.delete(this);
           else if (dist < 13 && this.hasLOS(P.pos)) { this.state = 'aim'; this.t = 0; this.aimDir.copy(dirP); this.burstDodged = false; SFX.play('aim'); }
           else G.attackers.delete(this);
         }
@@ -1140,7 +1313,7 @@ export class Enemy {
         if (!this.meleeDone && this.t >= WIND + 0.1) {
           this.meleeDone = true;
           const f = V(Math.sin(this.yaw), 0, Math.cos(this.yaw));
-          if (dist < 2.1 && f.dot(dirP) > 0.4) { if (P.hurt(this.heavy ? 16 : 11, dirP, this)) { SFX.play('heavy'); spark(P.pos.x, 1.3, P.pos.z, 8, 0xffffff, 3, 0.2); } }
+          if (dist < 2.1 && f.dot(dirP) > 0.4 && canReach(this.pos, P.pos)) { if (P.hurt(this.heavy ? 16 : 11, dirP, this)) { SFX.play('heavy'); spark(P.pos.x, 1.3, P.pos.z, 8, 0xffffff, 3, 0.2); } }
           else SFX.play('whoosh', 0.8);
         }
         if (this.t > WIND + STR) { this.meleeDone = false; this.endAttack(); }
@@ -1211,9 +1384,10 @@ export class Enemy {
       }
     }
 
-    // integrate movement
+    // integrate movement (on their feet, robbers move 30% quicker than they used to; knockbacks and falls untouched)
+    if (speedCap < 5) { want.multiplyScalar(ROB_SPEED); speedCap *= ROB_SPEED; }
     if (want.length() > speedCap) want.setLength(speedCap);
-    const accel = (this.state === 'flying' || this.state === 'ko' || this.state === 'stagger' || this.state === 'down' || this.state === 'dying') ? 60 : 8;
+    const accel = (this.state === 'flying' || this.state === 'ko' || this.state === 'stagger' || this.state === 'down' || this.state === 'dying') ? 60 : 10;
     this.prevVel.copy(this.vel);
     if (this.state !== 'flying' && this.state !== 'ko' && this.state !== 'stagger' && this.state !== 'down' && this.state !== 'dying') { this.vel.x = damp(this.vel.x, want.x, accel, dt); this.vel.z = damp(this.vel.z, want.z, accel, dt); }
     if (!Number.isFinite(this.vel.x) || !Number.isFinite(this.vel.z)) this.vel.set(0, 0, 0);
@@ -1224,7 +1398,7 @@ export class Enemy {
       const dx = this.pos.x - o.pos.x, dz = this.pos.z - o.pos.z, d = Math.hypot(dx, dz), rr = this.r + o.r;
       if (d < rr && d > 0.001) { const p = (rr - d) * 0.5; this.pos.x += dx / d * p; this.pos.z += dz / d * p; o.pos.x -= dx / d * p; o.pos.z -= dz / d * p; }
     }
-    if (!this.down) pushChairs(this.pos, this.r, this.vel, 1);
+    if (!this.down) { pushChairs(this.pos, this.r, this.vel, 1); disturbJunk(this.pos.x, this.pos.z, 0.4, this.vel.length()); }
     if (faceTo && faceTo.lengthSq() > 0.001 && !this.down) this.yaw = dampAngle(this.yaw, Math.atan2(faceTo.x, faceTo.z), this.state === 'aim' || this.state === 'fire' ? 25 : 8, dt);
 
     // feet
@@ -1300,7 +1474,7 @@ export class Enemy {
   endAttack() {
     if (this.state === 'fire' || this.state === 'aim') G.lastBurstEnd = G.time;
     if (this.state === 'fire') this.lastBurst = { dodged: !!this.burstDodged, hurt: !!this.burstHurt, t: G.time };
-    this.releaseToken(); this.state = 'combat'; this.t = 0; this.cool = this.heavy ? rand(1.2, 2.2) : rand(1.8, 3.6);
+    this.releaseToken(); this.state = 'combat'; this.t = 0; this.cool = this.heavy ? rand(0.8, 1.5) : rand(1.1, 2.3); // (back for more sooner)
   }
   // the tutorial asks for a shot (to teach the dodge roll): raise the rifle and aim at Karim now
   forceAim() {

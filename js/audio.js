@@ -1,8 +1,9 @@
 // Web Audio sound effects: Yusuf's recorded sounds (sfx/*.mp3: the vacuum sucking things up, the mop wiping, hitting
 // and swishing) plus procedural ones for everything else
+import { synthInto } from './synth.js';
 const SAMPLE_SETS = { suckPaper: ['SuckPaper', 9], suckGlass: ['SuckGlass', 5], suckLeaf: ['SuckLeaf', 5], hitMop: ['HitMop', 6], swish: ['Swish', 4], swishSlomo: ['SwishSlomo', 0], wipe: ['WipeFloor', 0], pickupBody: ['PickupBody', 4],
   roll: ['RollDodge', 2], kickHit: ['KickHit', 0], kickCloth: ['KickCloth', 2], finisherHit: ['FinisherHitSloMo', 0],
-  pickMop: ['PickupMop', 0], pickVacuum: ['PickupVacuum', 0], pickBarrow: ['PickupBarrow', 0], frogJingle: ['PickupTreefrog', 0], upgrade: ['Upgrade', 0] };
+  pickMop: ['PickupMop', 0], pickVacuum: ['PickupVacuum', 0], pickBarrow: ['PickupBarrow', 0], pickRifle: ['PickupRifle', 4], cupHit: ['PlasticCup', 3], elevStop: ['ElevatorStop', 0], binClang: ['HitGarbageBin', 4], frogJingle: ['PickupTreefrog', 0], upgrade: ['Upgrade', 0] };
 export const SFX = {
   ctx: null, master: null, muted: false, noise: null, last: {}, raw: {}, buf: {}, lastIdx: {}, loops: {},
   // fetch the sound files straight away (they're decoded once there's an audio context, after the first click)
@@ -56,6 +57,7 @@ export const SFX = {
     const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return;
     this.ctx = new AC();
     this.decodeAll();
+    synthInto(this.ctx, this.buf); // (rolling, paper, cups, bins: made in code)
     this.master = this.ctx.createGain(); this.master.gain.value = 0.55; this.master.connect(this.ctx.destination);
     const len = this.ctx.sampleRate * 1.5, buf = this.ctx.createBuffer(1, len, this.ctx.sampleRate), d = buf.getChannelData(0);
     for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;

@@ -31,6 +31,83 @@ export function mixamoDims(gltf) {
   };
 }
 
+// split every edge of the skirt's triangles (and the matching edges of its neighbours, so no cracks open up)
+function refineSkirt(g) {
+  const A = g.attributes, idx = g.index.array, sk = A.aSkirt, n0 = A.position.count;
+  const tri = idx.length / 3, split = new Map(), key = (a, b) => a < b ? a * 1e7 + b : b * 1e7 + a;
+  for (let t = 0; t < tri; t++) { const v = [idx[3 * t], idx[3 * t + 1], idx[3 * t + 2]];
+    if (v.some(i => sk.getY(i) > 0 || sk.getX(i) > 0)) for (let e = 0; e < 3; e++) split.set(key(v[e], v[(e + 1) % 3]), -1); }
+  const names = Object.keys(A), out = {}; let n = n0;
+  for (const k of names) out[k] = Array.from(A[k].array);
+  const mid = (a, b) => {
+    const kk = key(a, b); let m = split.get(kk); if (m === undefined) return -1; if (m >= 0) return m;
+    m = n++; split.set(kk, m);
+    for (const k of names) { const sz = A[k].itemSize, o = out[k];
+      if (k === 'skinIndex') continue;
+      if (k === 'skinWeight') { // the bones of both ends, the strongest four, renormalised
+        const w = {}; for (const [v, f] of [[a, 0.5], [b, 0.5]]) for (let j = 0; j < 4; j++) { const bi = out.skinIndex[v * 4 + j], bw = out.skinWeight[v * 4 + j] * f; if (bw > 0) w[bi] = (w[bi] || 0) + bw; }
+        const top = Object.entries(w).sort((x, y) => y[1] - x[1]).slice(0, 4); while (top.length < 4) top.push([0, 0]);
+        const sum = top.reduce((x, e) => x + e[1], 0) || 1;
+        for (let j = 0; j < 4; j++) { out.skinIndex.push(+top[j][0]); o.push(top[j][1] / sum); }
+        continue;
+      }
+      for (let j = 0; j < sz; j++) o.push((o[a * sz + j] + o[b * sz + j]) / 2);
+      if (k === 'normal') { const i = m * 3, l = Math.hypot(o[i], o[i + 1], o[i + 2]) || 1; o[i] /= l; o[i + 1] /= l; o[i + 2] /= l; }
+    }
+    return m;
+  };
+  const ni = [];
+  for (let t = 0; t < tri; t++) {
+    const [a, b, c] = [idx[3 * t], idx[3 * t + 1], idx[3 * t + 2]], ab = mid(a, b), bc = mid(b, c), ca = mid(c, a), k = (ab >= 0) + (bc >= 0) + (ca >= 0);
+    if (k === 0) ni.push(a, b, c);
+    else if (k === 3) ni.push(a, ab, ca, ab, b, bc, ca, bc, c, ab, bc, ca);
+    else if (k === 1) { if (ab >= 0) ni.push(a, ab, c, ab, b, c); else if (bc >= 0) ni.push(a, b, bc, a, bc, c); else ni.push(a, b, ca, ca, b, c); }
+    else { // two edges: a corner triangle and a quad
+      if (ab < 0) ni.push(c, ca, bc, ca, a, b, ca, b, bc);
+      else if (bc < 0) ni.push(a, ab, ca, ab, b, c, ab, c, ca);
+      else ni.push(b, bc, ab, a, ab, c, ab, bc, c);
+    }
+  }
+  for (const k of names) { const old = A[k], Arr = old.array.constructor; g.setAttribute(k, new THREE.BufferAttribute(new Arr(out[k]), old.itemSize, old.normalized)); }
+  g.setIndex(ni);
+}
+
+// cloth: skin the kameez as usual, then let the hem swing and push it out of the leg capsules
+const _cm = new THREE.Matrix4(), _cv = new THREE.Vector3(), _cv2 = new THREE.Vector3(), _cv3 = new THREE.Vector3(), _cq = new THREE.Quaternion();
+// (one set of cloth uniforms, shared by every material that draws Karim: his own, his shadow, and the AO pass)
+let CLOTH_U = null;
+export function clothify(mat, faceCam = false) { clothHook(mat, faceCam); return mat; }
+function clothHook(mat, faceCam = false) {
+  const U = CLOTH_U || (CLOTH_U = { uCapA: { value: [0, 1, 2, 3, 4, 5].map(() => new THREE.Vector3()) }, uCapB: { value: [0, 1, 2, 3, 4, 5].map(() => new THREE.Vector3()) }, uCapR: { value: [0, 0, 0, 0, 0, 0] },
+    uPivot: { value: new THREE.Vector3() }, uSway: { value: new THREE.Vector3() }, uTwist: { value: 0 }, uCardZ: { value: 0.12 } });
+  mat.onBeforeCompile = sh => {
+    Object.assign(sh.uniforms, U);
+    sh.vertexShader = sh.vertexShader.replace('#include <common>', `#include <common>
+attribute vec2 aSkirt; attribute float aHide; attribute float aKarim; varying float vHide; uniform vec3 uCapA[6]; uniform vec3 uCapB[6]; uniform float uCapR[6]; uniform vec3 uPivot; uniform vec3 uSway; uniform float uTwist; uniform float uCardZ;`)
+      .replace('#include <skinning_vertex>', `#include <skinning_vertex>
+vHide = aHide;
+if (aSkirt.y > 0.0) {
+  vec3 rel = transformed - uPivot; float ta = uTwist * aSkirt.y, tc = cos(ta), ts = sin(ta);
+  rel.xz = vec2(tc * rel.x - ts * rel.z, ts * rel.x + tc * rel.z);
+  transformed = uPivot + rel + uSway * aSkirt.y;
+}
+if (aSkirt.x > 0.0) for (int i = 0; i < 6; i++) {
+  vec3 ab = uCapB[i] - uCapA[i]; float h = clamp(dot(transformed - uCapA[i], ab) / max(dot(ab, ab), 1e-6), 0.0, 1.0);
+  vec3 cp = uCapA[i] + ab * h, d = transformed - cp; float L = length(d);
+  if (L < uCapR[i] && L > 1e-5) transformed = mix(transformed, cp + d * (uCapR[i] / L), aSkirt.x);
+}`);
+    // (for the AO's normal pass: the reshaped kameez reports itself as facing the camera, since its stored normals no
+    // longer match its shape and would read as deep creases)
+    // (in the AO pass Karim is flattened to a card facing the camera at his own depth: he still hides what's behind
+    // him, but has no folds of his own for the AO to darken)
+    if (faceCam) sh.vertexShader = sh.vertexShader.replace('#include <project_vertex>', '#include <project_vertex>\nif (aKarim > 0.5) { vec4 pz = modelViewMatrix * vec4(uPivot, 1.0); float fz = pz.z + uCardZ; mvPosition.xy *= fz / mvPosition.z; mvPosition.z = fz; gl_Position = projectionMatrix * mvPosition; /* (slid along the line of sight, so he lands on exactly the same pixels) */\n#ifndef FLAT_SHADED\nvNormal = vec3(0.0, 0.0, 1.0);\n#endif\n}');
+    sh.fragmentShader = 'varying float vHide;\n' + sh.fragmentShader
+      .replace('#include <clipping_planes_fragment>', '#include <clipping_planes_fragment>\nif (vHide > 0.5) discard;');
+  };
+  const base = mat.customProgramCacheKey.bind(mat); mat.customProgramCacheKey = () => base() + 'karimCloth' + (faceCam ? 'F' : '');
+  return U;
+}
+
 const _q = new THREE.Quaternion(), _q2 = new THREE.Quaternion(), _q3 = new THREE.Quaternion(), _qi = new THREE.Quaternion(), _v = new THREE.Vector3();
 
 export class MixamoBody {
@@ -42,11 +119,16 @@ export class MixamoBody {
     gltf.scene.traverse(o => {
       if (o.isSkinnedMesh) {
         o.material = new THREE.MeshStandardMaterial({ map: texture, roughness: 0.72, metalness: 0, envMapIntensity: 0.8 });
+        this.clothU = clothHook(o.material);
+        // (his shadow takes the same shape, so it doesn't show the legs through the dress)
+        o.customDepthMaterial = clothify(new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking }));
+        o.customDistanceMaterial = clothify(new THREE.MeshDistanceMaterial());
         o.castShadow = true; o.receiveShadow = true; o.frustumCulled = false; o.userData.noProbe = true; o.userData.keep = true;
         this.mesh = o;
       }
     });
     this.reweightKameez();
+    for (let k = 0; k < 2; k++) refineSkirt(this.mesh.geometry); // (finer skirt, so the leg capsules have enough cloth to push)
     // hide the stand-in body (keep mop + blob)
     rig.root.traverse(o => { if (o.isMesh && !o.userData.keep) { let p = o, w = false; while (p) { if (p === rig.weapon) w = true; p = p.parent; } if (!w) o.visible = false; } });
     rig.skirt = null;
@@ -97,13 +179,21 @@ export class MixamoBody {
     const m = this.mesh, g = m.geometry, pos = g.attributes.position, si = g.attributes.skinIndex, sw = g.attributes.skinWeight;
     const bones = m.skeleton.bones, idx = n => bones.indexOf(this.B[n]);
     const H = idx('Hips'), LU = idx('LeftUpLeg'), LL = idx('LeftLeg'), RU = idx('RightUpLeg'), RL = idx('RightLeg');
-    const S = KARIM_SCALE, top = 0.98, hem = 0.39, kneeY = 0.56, legX = 0.117;
+    const S = KARIM_SCALE, top = 0.98, hem = 0.39, kneeY = 0.56, legX = 0.117, HIDE_Y = 0.5;
     const sm = (a, b, v) => { const t = Math.min(1, Math.max(0, (v - a) / (b - a))); return t * t * (3 - 2 * t); };
+    const cloth = new Float32Array(pos.count * 2); // (per vertex: [kept off the legs, how freely the hem swings])
+    g.setAttribute('aSkirt', new THREE.BufferAttribute(cloth, 2));
+    // the thighs never show (the kameez always covers them), so they aren't drawn at all: nothing left to poke through
+    const hide = new Float32Array(pos.count); g.setAttribute('aHide', new THREE.BufferAttribute(hide, 1));
+    g.setAttribute('aKarim', new THREE.BufferAttribute(new Float32Array(pos.count).fill(1), 1)); // (marks his vertices, for the AO pass)
     for (let i = 0; i < pos.count; i++) {
       const x = pos.getX(i) * S, y = pos.getY(i) * S, z = pos.getZ(i) * S;
-      if (y < hem || y > top) continue;
+      if (y < hem - 0.02 || y > top) continue;
       const dLeg = Math.min(Math.hypot(x - legX, z), Math.hypot(x + legX, z));
-      if (dLeg < 0.085) continue; // trouser leg inside the kameez
+      if (dLeg < 0.085) { if (y > HIDE_Y) hide[i] = 1; continue; } // trouser leg inside the kameez (above the knee: hidden)
+      const dn = (top - y) / (top - hem);
+      cloth[i * 2] = sm(top, top - 0.1, y); cloth[i * 2 + 1] = Math.pow(Math.min(1, dn), 1.6);
+      if (y < hem) continue;
       const t = (top - y) / (top - hem), legW = 0.72 * t;
       const wl = sm(-0.09, 0.09, x), kn = sm(kneeY + 0.12, kneeY - 0.02, y);
       const w = [[H, 1 - legW], [LU, legW * wl * (1 - kn)], [LL, legW * wl * kn], [RU, legW * (1 - wl) * (1 - kn)], [RL, legW * (1 - wl) * kn]]
@@ -113,6 +203,37 @@ export class MixamoBody {
       sw.setXYZW(i, w[0][1] / sum, w[1][1] / sum, w[2][1] / sum, w[3][1] / sum);
     }
     si.needsUpdate = sw.needsUpdate = true;
+  }
+
+  // the kameez as cloth (cheaply): each thigh and shin is an invisible capsule the skirt is pushed out of
+  // (so the legs never poke through), and the hem swings on a spring as he moves and turns
+  updateCloth(dt) {
+    const U = this.clothU, m = this.mesh; if (!U || !m) return;
+    dt = Math.min(Math.max(dt, 1e-4), 1 / 20);
+    m.updateMatrixWorld(true);
+    const inv = _cm.copy(m.matrixWorld).invert(), sc = m.matrixWorld.getMaxScaleOnAxis();
+    const P = (n, out) => this.B[n].getWorldPosition(out).applyMatrix4(inv);
+    const legs = [['LeftUpLeg', 'LeftLeg', 0.11], ['LeftLeg', 'LeftFoot', 0.092], ['RightUpLeg', 'RightLeg', 0.11], ['RightLeg', 'RightFoot', 0.092], ['LeftFoot', 'LeftToeBase', 0.08], ['RightFoot', 'RightToeBase', 0.08]];
+    legs.forEach(([a, b, r], i) => { P(a, U.uCapA.value[i]); P(b, U.uCapB.value[i]); if (i % 2 === 0 && i < 4) U.uCapA.value[i].lerp(U.uCapB.value[i], 0.12); U.uCapR.value[i] = r / sc; }); // (thighs start a little below the hip joint, so the hips don't puff out)
+    // the hem trails the hips: a damped spring on its offset and on its twist
+    const hp = this.B.Hips.getWorldPosition(_cv);
+    P('Hips', U.uPivot.value);
+    U.uCardZ.value += ((G.barrow && G.barrow.held ? -1.1 : 0.12) - U.uCardZ.value) * Math.min(1, dt * 8); // (pushing the barrow: his AO card sits behind it, so it can't shade the tray in front of him)
+    const c = this.cloth || (this.cloth = { p: hp.clone(), v: new THREE.Vector3(), o: new THREE.Vector3(), ov: new THREE.Vector3(), yaw: null, w: 0, th: 0, tw: 0 });
+    const v = _cv2.copy(hp).sub(c.p).divideScalar(dt).setY(0); c.p.copy(hp);
+    if (v.length() > 12) v.set(0, 0, 0); // (a teleport: the lift, a level change)
+    const acc = _cv3.copy(v).sub(c.v).divideScalar(dt); c.v.copy(v);
+    if (acc.length() > 80) acc.setLength(80);
+    c.ov.addScaledVector(c.o, -140 * dt).addScaledVector(c.ov, -11 * dt).addScaledVector(acc, -0.55 * dt);
+    c.o.addScaledVector(c.ov, dt); if (c.o.length() > 0.13) c.o.setLength(0.13);
+    const f = _cv2.set(0, 0, 1).applyQuaternion(this.B.Hips.getWorldQuaternion(_cq)), yaw = Math.atan2(f.x, f.z);
+    if (c.yaw === null) c.yaw = yaw;
+    let dy = yaw - c.yaw; dy -= Math.round(dy / (2 * Math.PI)) * 2 * Math.PI; c.yaw = yaw;
+    const w = dy / dt, al = Math.max(-400, Math.min(400, (w - c.w) / dt)); c.w = w;
+    c.tw += (-130 * c.th - 10 * c.tw - al * 0.5) * dt; c.th = Math.max(-0.55, Math.min(0.55, c.th + c.tw * dt));
+    // into the mesh's own space
+    U.uSway.value.copy(c.o).transformDirection(inv).multiplyScalar(c.o.length() / sc);
+    U.uTwist.value = c.th;
   }
 
   // world quaternions/positions in rig.root space, with the rig in T-pose and Mixamo at bind
@@ -209,14 +330,15 @@ export class MixamoBody {
     if (!this.armBones) { this.armBones = []; for (const n in this.B) if (/Shoulder|Arm|Hand/.test(n)) this.armBones.push(this.B[n]); this.armClip = this.armBones.map(() => new THREE.Quaternion()); }
     for (let i = 0; i < this.armBones.length; i++) this.armClip[i].copy(this.armBones[i].quaternion);
     // arms from the authored idle at its current time (so walking keeps the idle hold)
-    if (this.mopT) {
+    if (this.mopT && !this.authOne) {
       if (!this.idleArm) { this.idleArm = []; const tr = this.clips.Idle.tracks;
         this.armBones.forEach((b, i) => { const t = tr.find(x => x.name === b.name + '.quaternion'); if (t) this.idleArm.push([i, t.createInterpolant()]); }); }
       const it = this.actions.Idle.time;
-      for (const [i, ip] of this.idleArm) this.armClip[i].fromArray(ip.evaluate(it)).normalize();
+      const k = this.one && this.authFade ? 1 - this.oneW : 1; // (out of an authored move: from its last pose into the idle hold)
+      for (const [i, ip] of this.idleArm) { _q.fromArray(ip.evaluate(it)).normalize(); if (k >= 1) this.armClip[i].copy(_q); else this.armClip[i].slerp(_q, k * k * (3 - 2 * k)); }
     }
     // ...and from the authored mopping while he mops
-    if (this.sweep && this.sweepW > 0.001) {
+    if (this.sweep && this.sweepW > 0.001 && !this.authOne) {
       if (!this.sweepArm) { this.sweepArm = []; const tr = this.clips.Sweep.tracks;
         this.armBones.forEach((b, i) => { const t = tr.find(x => x.name === b.name + '.quaternion'); if (t) this.sweepArm.push([i, t.createInterpolant()]); }); }
       const st = this.actions.Sweep.time;

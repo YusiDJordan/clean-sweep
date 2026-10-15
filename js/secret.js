@@ -7,8 +7,8 @@ import { spark, floatText } from './fx.js';
 import { P as PROG, saveProgress, addXP } from './progress.js';
 import { HUD } from './hud.js';
 
-export const SECRET_PTS = 150;
-const SPOTS = { basement: [10.7, 4.95, 3.3], lobby: [17.5, -6.85, 2.6], ops: [10.8, -11.25, 0.7] }; // x, z, facing
+export const SECRET_PTS = 60; // (a nice bonus, not a level of its own)
+const SPOTS = { lobby: [17.5, -6.85, 2.6], ops: [10.8, -11.25, 0.7] }; // x, z, facing
 export const SECRET = { obj: null, x: 0, z: 0, found: false, t: 0, hop: -1 };
 
 function buildFrog() {

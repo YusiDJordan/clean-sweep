@@ -10,6 +10,7 @@ import { buildCartTools, updateCartTools, nearCart, TOOL_ORDER, buildBarrow, par
 import { chairs } from './destruct.js';
 import { initDirt, seedDirt, initPapers, initShards, initParticles, spawnPaper, updateFX, setDirtBaseline, measureDirt, litterCount, FX, bloodPool, cleanAt, initLeaves, seedLeaves, leafCount, initJunk, junkCount, vacuumAt, polishFloor, papers, junk } from './fx.js';
 import { Player, spawnEnemies, Enemy } from './actors.js';
+import { Boss, LINES_BOSS } from './boss.js';
 import { BS, buildBasement, seedBasementMess, updateBasement } from './basement.js';
 import { OPS, buildOps, spawnOpsEnemies, seedOpsMess } from './ops.js';
 import { TUT, startTutorial, updateTutorial } from './tutorial.js';
@@ -117,9 +118,9 @@ for (const id of ['controlsov', 'gfxov']) $(id).addEventListener('click', e => {
 G.attackers = new Set(); let globalCool = 1.5;
 G.requestAttack = e => {
   const aggro = G.enemies.filter(x => x.aggro && !x.ko).length;
-  const max = aggro > 5 ? 3 : 2;
+  const max = 2; // (never more than two at once)
   if (G.attackers.size >= max || globalCool > 0 || G.player.state === 'dead') return false;
-  G.attackers.add(e); globalCool = rand(0.45, 1.0); return true;
+  G.attackers.add(e); globalCool = rand(0.3, 0.65); return true;
 };
 G.alertGroup = g => { for (const e of G.enemies) if (e.group === g && !e.aggro) e.alert(rand(0.1, 0.5)); };
 G.anyAggro = () => G.enemies.some(e => e.aggro && !e.ko);
@@ -136,8 +137,48 @@ G.onDamage = d => {
 G.onKO = e => {
   if (G.level === 'basement') return; // (the tutorial runs its own ending)
   const left = G.enemies.filter(x => !x.ko).length;
-  if (left === 0) setTimeout(() => lobbyCleared(), 900);
+  if (left === 0 && G.level === 'ops' && !G.boss && L.gltf.Boss) { setTimeout(startBoss, 1500); return; } // (the floor's boss rides up)
+  if (left === 0) setTimeout(() => lobbyCleared(), e.isBoss ? 2400 : 900);
 };
+G.say = (e, text, t = 2.4) => { say(e, text); G.sayT = t; G.sayE = e; };
+// ---------------- the boss: the lift dings, the doors part, the Contractor steps out and says his piece ----------------
+function startBoss() {
+  if (G.state !== 'play' || G.boss) return;
+  const z0 = G.bounds.minZ, P = G.player;
+  let el = null, bd = -1; for (const e of L.elevators || []) { const d = Math.abs(e.x - P.pos.x); if (d > bd) { bd = d; el = e; } }
+  if (!el) return;
+  const b = G.bossPre || new Boss(el.x, el.cabZ, 0); b.pos.set(el.x, 0, el.cabZ); b.yaw = 0; b.root.visible = true; b.sync(); G.boss = b; G.enemies.push(b);
+  G.bossOut = new THREE.Vector3(el.x, 0, z0 + 5.0); // (well out of the lift, into the room)
+  G.bossIntro = { phase: 'doors', t: 0, el, line: 0 }; el.force = true;
+  SFX.play('ding'); HUD.toast && HUD.toast('The lift is coming up...', 1.6);
+}
+function updateBossIntro(dt) {
+  const I = G.bossIntro, b = G.boss; if (!I || !b) return;
+  I.t += dt;
+  if (I.phase === 'doors') {
+    G.camFocus = { x: b.pos.x, z: b.pos.z + 2, w: Math.min(0.6, I.t * 0.6) };
+    if (I.t > 1.3) { I.phase = 'walk'; I.t = 0; b.setState('walkout'); G.cine = true; }
+  } else if (I.phase === 'walk') {
+    G.camFocus = { x: b.pos.x, z: b.pos.z, w: Math.min(1, 0.6 + I.t * 0.4) };
+    if (b.pos.distanceTo(G.bossOut) < 0.3 || I.t > 5) { I.phase = 'talk'; I.t = 0; b.setState('talk'); G.say(b, bossLine(0), LINES_BOSS[0][1]); }
+  } else if (I.phase === 'talk') {
+    G.camFocus = { x: b.pos.x, z: b.pos.z + 0.6, w: 1 }; // (all on him: his lines stay on screen wherever Kareem is)
+    if (I.t > LINES_BOSS[I.line][1] + 0.15) {
+      I.line++; I.t = 0;
+      if (I.line < LINES_BOSS.length) G.say(b, bossLine(I.line), LINES_BOSS[I.line][1]);
+      else { I.phase = 'beat'; I.t = 0; G.cine = false; G.camFocus = null; I.el.force = false; $('bossrow').classList.add('on'); } // (a beat: Kareem can move, the bar is up, he hasn't started yet)
+    }
+  } else if (I.phase === 'beat') {
+    if (I.t > 1.3) { G.bossIntro = null; b.aggro = true; b.opener = true; b.setState('fight'); } // (and he opens with a grenade)
+  }
+}
+const bossLine = i => { const l = LINES_BOSS[i][0]; return typeof l === 'function' ? l(G.enemies.filter(e => !e.isBoss).length) : l; };
+function updateBossBar() {
+  const b = G.boss; if (!b) return;
+  const f = Math.max(0, b.hp) / b.maxHp; $('bossfill').style.width = (f * 100).toFixed(1) + '%';
+  G.bossGhost = Math.max(f, (G.bossGhost ?? 1) - 0.004); $('bossghost').style.width = (G.bossGhost * 100).toFixed(1) + '%'; // (the lost chunk lingers, then drains)
+  if (b.ko && !G.bossBarGone) { G.bossBarGone = true; setTimeout(() => $('bossrow').classList.remove('on'), 1800); }
+}
 G.onPlayerDead = () => {
   G.slowmo(1.2, 0.3);
   setTimeout(() => { G.state = 'dead'; $('dead').classList.add('show'); }, 1300);
@@ -228,7 +269,7 @@ function levelReport() {
   const grade = gradeFor(clean); // (the grade is about the clean-up: beating the robbers alone is a C)
   const counts = {}; for (const n of s.ledger) counts[n] = (counts[n] || 0) + 1;
   const damages = Object.entries(counts).map(([n, c]) => ({ name: n + (c > 1 ? ' ×' + c : ''), cost: (s.costs && s.costs[n]) || 0 }));
-  const pts = pointsFor({ kos, maxCombo: s.maxCombo, perfect: s.perfect, clean, damage: s.damage });
+  const pts = pointsFor({ kos, total: G.enemies.length, maxCombo: s.maxCombo, perfect: s.perfect, clean, damage: s.damage });
   const before = { xp: PROG.xp, points: PROG.points };
   const ups = bank(pts.total, total);
   return { title: LV[G.level].name + ' report', grade, before, after: { xp: PROG.xp, points: PROG.points }, ups, total, pts,
@@ -361,7 +402,11 @@ async function boot() {
   // let the GPU compile, then bake the environment probe (characters hidden)
   for (const o of [G.player.rig.root, ...G.enemies.map(e => e.rig.root)]) o.traverse(m => { if (m.isMesh) m.userData.noProbe = true; });
   ensureEnv(); R.camTarget.copy(G.camHold || G.player.pos).setY(0.8); updateCamera(1);
+  // the boss is built now, in plain sight of the shader compile (and his textures sent to the GPU), then hidden until
+  // the lift brings him up: no hitch when he arrives
+  if (G.level === 'ops' && L.gltf.Boss) { const b = new Boss(R.camTarget.x, R.camTarget.z + 1, 0); G.bossPre = b; b.model.traverse(o => { if (o.isMesh) for (const k of ['map', 'normalMap']) if (o.material[k]) G.renderer.initTexture(o.material[k]); }); }
   await compileScene(G.scene, G.camera); // (every shader once, the way the game draws: much quicker to start)
+  if (G.bossPre) { G.renderer.render(G.scene, G.camera); bossPortrait(G.bossPre); G.bossPre.root.visible = false; G.bossPre.rifle.visible = false; } // (his rifle too: it lives in the scene, not on him)
   mark('shaders');
   captureEnvironment(G.level === 'basement' ? new THREE.Vector3(4, 1.6, 0) : G.level === 'ops' ? new THREE.Vector3(0, 1.8, 2) : new THREE.Vector3(-1, 2.2, 0));
   mark('envProbe');
@@ -409,6 +454,33 @@ function seedPapers() {
     }
   }
 
+}
+
+function bossPortrait(b) { // (the Contractor's mugshot for his health bar, shot once while he's prewarmed)
+  try {
+    b.pos.set(OPS.out ? OPS.out.x : b.pos.x, 0, OPS.out ? OPS.out.z : b.pos.z); b.yaw = 0; b.sync(); b.root.visible = true;
+    b.animate(1, { Idle: 1 }, 0);
+    b.root.updateMatrixWorld(true);
+    const head = b.rig.chest.getWorldPosition(new THREE.Vector3()), fwd = new THREE.Vector3(0, 0, 1);
+    snapFace(head.add(new THREE.Vector3(0, 0.04, 0)), fwd, -0.32, 1.05, 'bossportrait', [b.rig.chest]);
+  } catch (e) { console.warn('boss portrait', e); }
+}
+
+function snapFace(head, fwd, side, dist, id) {
+  const r = G.renderer, rt = new THREE.WebGLRenderTarget(160, 160);
+  const cam = new THREE.PerspectiveCamera(22, 1, 0.05, 10);
+  cam.position.copy(head).addScaledVector(fwd, dist).add(new THREE.Vector3(0, 0.05, 0)).addScaledVector(new THREE.Vector3(fwd.z, 0, -fwd.x), side);
+  cam.lookAt(head.clone().add(new THREE.Vector3(0, -0.02, 0)));
+  const bg = G.scene.background; G.scene.background = new THREE.Color(0x160d0b);
+  r.setRenderTarget(rt); r.render(G.scene, cam); r.setRenderTarget(null); G.scene.background = bg;
+  const px = new Uint8Array(160 * 160 * 4); r.readRenderTargetPixels(rt, 0, 0, 160, 160, px);
+  const cv = document.createElement('canvas'); cv.width = cv.height = 160; const cx = cv.getContext('2d'), img = cx.createImageData(160, 160);
+  for (let y = 0; y < 160; y++) for (let x = 0; x < 160; x++) {
+    const si = ((159 - y) * 160 + x) * 4, di = (y * 160 + x) * 4;
+    for (let k = 0; k < 3; k++) { const v = px[si + k] / 255; img.data[di + k] = Math.min(255, Math.pow(v * 1.25 / (1 + v * 0.35), 1 / 2.2) * 255); }
+    img.data[di + 3] = 255;
+  }
+  cx.putImageData(img, 0, 0); $(id).src = cv.toDataURL(); rt.dispose();
 }
 
 function makePortrait() {
@@ -553,7 +625,7 @@ function startGame() {
   if (G.state !== 'title') return;
   SFX.init();
   G.state = 'play';
-  computeStats(); G.player.maxHp = G.player.hp = G.ps.hp;
+  computeStats(); G.player.maxHp = G.player.hp = G.ps.hp; G.player.maxEnergy = G.player.energy = G.ps.stamina;
   $('shop').classList.remove('show'); closeMenu();
   if (G.fromStairs || G.arrive) { // up from the dark stairwell (or the lift): the level card over black, then he runs up the stairs (updateArrival)
     const b = $('blackout'); b.style.transition = 'none'; b.classList.add('on');
@@ -621,7 +693,11 @@ function loop(draw = true) {
     const fu = R.floorMat && R.floorMat.userData.uniforms;
     const gc = G.tutGlow || { x: G.player.pos.x, z: G.player.pos.z, r: 4.5 }; // (the tutorial can light up a spot of its own)
     if (fu && fu.uClean) { fu.uClean.value.set(gc.x, gc.z, gc.r, G.cleanGlow); fu.uTime.value = G.time; fu.uTool.value = TOOL_ORDER.indexOf(G.player.tool); }
-    updateCartTools(); if (G.barrow && !G.barrow.held) parkBarrow(); updateBarrowHops(dt);
+    updateCartTools(); if (G.barrow && !G.barrow.held) parkBarrow(); else if (G.barrow && G.barrow.col) G.barrow.col.active = false; updateBarrowHops(dt);
+    { // the wheelbarrow rumbling along while he pushes it (slower and lower with a load in it)
+      const B = G.barrow, live = G.state === 'play' || G.state === 'cleared', v = live && B && B.held ? G.player.vel.length() : 0;
+      SFX.loop('rollBarrow', Math.min(1, v / 2.4) * 0.55, Math.max(0.5, 0.65 + Math.min(v, 5) * 0.12 - (B && B.load.length ? 0.08 : 0)));
+    }
     FX.glow = G.cleanGlow > 0.01 ? [gc.x, gc.z, gc.r, G.cleanGlow] : null;
   }
   updateElevators(dt);
@@ -631,6 +707,7 @@ function loop(draw = true) {
     if (G.arrive && G.state === 'play') updateArrival(rdt);
     else if (G.state === 'play' && (G.introPending || G.intro)) updateIntro(rdt);
     else if (G.state === 'play') updateHunt(rdt);
+    if (G.bossIntro && G.state === 'play') updateBossIntro(dt); if (G.boss) updateBossBar();
     if (G.sayT > 0) { G.sayT -= rdt; if (G.sayT <= 0 || G.sayE.ko) { G.sayT = 0; say(null); } else placeSpeech(G.sayE); }
   }
   updateGuideArrow(rdt);
@@ -673,4 +750,4 @@ $('newbtn').addEventListener('click', () => {
 });
 $('menubtn').addEventListener('click', () => location.reload()); // back to the title screen
 window.G = G; window.THREE = THREE; G.__L = L; G.__SFX = SFX; G.__FX = FX; G.__blood = bloodPool; G.__clean = cleanAt; G.__paper = spawnPaper; G.__vac = vacuumAt; G.__LIFT = LIFT; G.__papers = papers; G.__junk = junk; G.__polish = polishFloor; // debug handles
-boot().catch(err => { console.error(err); $('loadtext').textContent = 'Could not start: ' + String(err && err.message || err).slice(0, 140); });
+boot().catch(err => { console.error(err); const w = $('loadword'); w.classList.add('err'); w.textContent = 'Could not start: ' + String(err && err.message || err).slice(0, 140); });

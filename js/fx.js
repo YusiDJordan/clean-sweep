@@ -1,13 +1,23 @@
 // Effects: floor dirt layer, paper sheets, glass shards, sparks/droplets, tracers, swing trails, floating text
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { G, rand, makeCanvas, clamp, pointInBox } from './state.js';
+import { G, rand, makeCanvas, clamp, pointInBox, markRect, uploadRect } from './state.js';
 import { paperAtlas, glowTex } from './textures.js';
-import { wipeDecals, decalsToClean, decalDirt, updateDecals, seedDecals, polishAt, dullToPolish, roughLeft, GLOW, GOLD_GLSL, DECALS, roughCells, removeDecalsWhere } from './decals.js';
+import { SFX } from './audio.js';
+import { wipeDecals, decalsToClean, decalDirt, updateDecals, seedDecals, polishAt, dullToPolish, roughLeft, GLOW, GOLD_GLSL, DECALS, roughCells, removeDecalsWhere, addDecal } from './decals.js';
 
 export const FX = { dirtCanvas: null, dirtCtx: null, dirtTex: null, dirtDirty: false, cleanPct: 0 };
 
 const B = () => G.bounds;
+// flying debris (glass, chunks) stays in the room: it bounces off the outer walls and the tall inner ones
+function keepIn(o, px, pz) {
+  const b = G.bounds, m = 0.12;
+  if (o.x < b.minX + m) { o.x = b.minX + m; o.vx = Math.abs(o.vx) * 0.3; }
+  if (o.x > b.maxX - m) { o.x = b.maxX - m; o.vx = -Math.abs(o.vx) * 0.3; }
+  if (o.z < b.minZ + m) { o.z = b.minZ + m; o.vz = Math.abs(o.vz) * 0.3; }
+  if (o.z > b.maxZ - m) { o.z = b.maxZ - m; o.vz = -Math.abs(o.vz) * 0.3; }
+  for (const c of G.colliders) if (c.active && c.y1 > 2.4 && c.y0 < 0.3 && o.y < c.y1 && pointInBox(c, o.x, o.z, 0.02)) { o.x = px; o.z = pz; o.vx *= -0.3; o.vz *= -0.3; break; }
+}
 const PXM = 40; // dirt pixels per metre (crisp enough for boot prints)
 
 // ================= DIRT =================
@@ -101,9 +111,9 @@ export function polishFloor(x, z, r, strength) { polishAt(x, z, r, strength); }
 // light litter (paper, banknotes, glass) is caught from much further than the grime: it slides in slowly from
 // the edge of the draught, then faster and faster, lifting off the floor as it whips into the nozzle
 const LITTER_R = 3.8, GLASS_R = 3.4;
-export const SUCKED = { paper: 0, glass: 0, leaf: 0 }; // (what the last vacuumAt swallowed: for the sounds)
+export const SUCKED = { paper: 0, glass: 0, leaf: 0, cup: 0 }; // (what the last vacuumAt swallowed: for the sounds)
 export function vacuumAt(x, z, r, dt) {
-  FX.vacT = G.time; SUCKED.paper = SUCKED.glass = SUCKED.leaf = 0;
+  FX.vacT = G.time; SUCKED.paper = SUCKED.glass = SUCKED.leaf = SUCKED.cup = 0;
   wipeDecals(x, z, r * 0.6, Math.min(1, dt * 9), 1); // grit, soil, dust
   let n = 0;
   const pull = (o, R, rest) => {
@@ -134,7 +144,7 @@ export function vacuumAt(x, z, r, dt) {
   }
   for (let i = junk.length - 1; i >= 0; i--) {
     const j = junk[i]; if (j.floorY > 0.1) continue; // (cups on a table stay put)
-    if (pull(j, LITTER_R)) { junk.splice(i, 1); n++; if (j.kind === 'folder') { SUCKED.paper++; G.stats.papers++; } else SUCKED.leaf++; continue; }
+    if (pull(j, LITTER_R)) { junk.splice(i, 1); n++; if (j.kind === 'folder') { SUCKED.paper++; G.stats.papers++; } else SUCKED.cup++; continue; }
     if (j.suck > 0) { j.ph = (j.ph || 0) + dt * 20; j.y = j.floorY + 0.002 + 0.2 * j.suck * j.suck; }
   }
   for (const s of shards) {
@@ -157,7 +167,7 @@ export function cleanAt(x, z, r, strength = 0.35) {
     g.addColorStop(0, `rgba(0,0,0,${strength})`); g.addColorStop(0.7, `rgba(0,0,0,${strength * 0.7})`); g.addColorStop(1, 'rgba(0,0,0,0)');
     ctx.fillStyle = g; ctx.beginPath(); ctx.arc(px, py, rr, 0, Math.PI * 2); ctx.fill();
     ctx.restore();
-    FX.dirtDirty = true;
+    markRect(FX, 'dirtRect', px - rr - 1, py - rr - 1, px + rr + 1, py + rr + 1); // (just this patch goes to the GPU)
   }
   wipeDecals(x, z, r, strength, 0); // the mop's kind of grime decals (smears, scuffs, prints...)
   // wipe blood the same way: the mop erases it from each pool's mask where it passes (no shrinking)
@@ -262,7 +272,8 @@ export function dirtAmount() { return measureDirt(); }
 export function updateDirt(dt) {
   updatePools(dt); updateDecals(dt);
   FX.upT = (FX.upT || 0) - dt;
-  if (FX.dirtDirty && FX.upT <= 0) { FX.dirtTex.needsUpdate = true; FX.dirtDirty = false; FX.upT = 0.045; }
+  if (FX.dirtDirty && FX.upT <= 0) { FX.dirtTex.needsUpdate = true; FX.dirtDirty = false; FX.dirtRect = null; FX.upT = 0.045; }
+  else if (FX.dirtRect && FX.upT <= 0) { if (!uploadRect(FX.dirtTex, FX.dirtCtx, FX.dirtRect)) FX.dirtTex.needsUpdate = true; FX.dirtRect = null; FX.upT = 0.03; }
   if (FX.wetDirty) { FX.wetTex.needsUpdate = true; FX.wetDirty = false; }
   measureT -= dt;
   if (measureT <= 0) { measureT = 0.4; FX.dirtLevel = measureDirt(); }
@@ -281,6 +292,11 @@ export function seedDirt() {
   seedDecals(trails);
   // nothing on the carpets (they'd only get soaked) and nothing under tables, couches and desks (no reaching the mop in)
   clearDirtZones([...(G.noDirt || []), ...G.colliders.filter(b => b.active && b.y0 < 0.4 && b.y1 < 2.2)]);
+  // ...except a few spots a level asks for (the grime under the lobby bench)
+  for (const [x, z, w, d] of G.dirtSpots || []) {
+    for (let i = 0; i < 9; i++) dirtBlob(x + rand(-w * 0.48, w * 0.48), z + rand(-d * 0.6, d * 0.6), rand(0.18, 0.4), '70,54,38', rand(0.45, 0.75), 1.2);
+    for (let i = 0; i < 6; i++) addDecal(['smear', 'heel', 'scratch', 'speckle'][i % 4], x + rand(-w * 0.55, w * 0.55), z + rand(-d * 0.9, d * 0.9));
+  }
   FX.dirtDirty = true;
 }
 // wipe every kind of floor mess out of some boxes (colliders' shape): the dirt layer, decals and dull polish
@@ -349,16 +365,20 @@ export function spawnPaper(x, y, z, vx, vy, vz, opts = {}) {
 }
 // knock resting papers (e.g. neat stacks on a desk) into the air
 export function wakePapers(x, y, z, r, force = 2.5, dirx = 0, dirz = 0) {
+  let n = 0;
   for (const p of papers) {
     if (!p.rest || Math.abs(p.y - y) > 0.6) continue;
     const dx = p.x - x, dz = p.z - z, d = Math.hypot(dx, dz);
     if (d > r) continue;
+    n++;
     const k = force * (1 - d / r * 0.6) * rand(0.5, 1);
     p.rest = false; p.neat = false;
     p.vx = (dx / (d + 0.05)) * k * 0.6 + dirx * k + rand(-0.5, 0.5); p.vz = (dz / (d + 0.05)) * k * 0.6 + dirz * k + rand(-0.5, 0.5); p.vy = rand(1.2, 3) * (force / 2.5);
     p.wy = rand(-6, 6);
   }
 }
+// paper being shoved about: a crinkle, louder the more sheets go
+function rustle(n) { if (n > 0) SFX.sample('paperRustle', Math.min(0.85, 0.18 + n * 0.06), rand(0.9, 1.15), 0.08); }
 export function paperBurst(x, y, z, n, dirx = 0, dirz = 0, force = 2.5) {
   wakePapers(x, y, z, 0.7, force, dirx * 0.5, dirz * 0.5);
   for (let i = 0; i < n; i++) {
@@ -367,14 +387,31 @@ export function paperBurst(x, y, z, n, dirx = 0, dirz = 0, force = 2.5) {
   }
 }
 // wind/kick from characters moving through resting papers
-export function disturbPapers(x, z, r, strength) {
+export function disturbPapers(x, z, r, strength, byKarim = false) { // (only Karim's own feet make the paper sounds)
+  let n = 0;
   for (const p of papers) {
     const dx = p.x - x, dz = p.z - z, d2 = dx * dx + dz * dz;
     if (d2 < r * r && p.y < 0.2) {
       const d = Math.sqrt(d2) + 0.05, k = strength * (1 - d / r);
       if (k <= 0.2) continue;
+      if (p.rest) n++;
+      if (byKarim) p.karim = true;
       p.rest = false; p.neat = false; p.vx += dx / d * k; p.vz += dz / d * k; p.vy += k * 0.6; p.wy += rand(-4, 4);
     }
+  }
+  if (byKarim) rustle(n);
+}
+// feet (or a mop) going through cups and folders on the floor: they skid and spin away; cups clatter
+export function disturbJunk(x, z, r, spd, dirx = 0, dirz = 0) {
+  if (spd < 0.6) return;
+  for (const j of junk) {
+    if (j.floorY > 0.1 || j.suck) continue;
+    const dx = j.x - x, dz = j.z - z, d = Math.hypot(dx, dz); if (d > r) continue;
+    const k = (j.kind === 'cup' ? 1.0 : 0.45) * (0.6 + spd * 0.55) * (1 - d / r * 0.5), nx = dx / (d + 0.01), nz = dz / (d + 0.01);
+    const was = Math.hypot(j.vx || 0, j.vz || 0);
+    j.vx = (j.vx || 0) * 0.3 + (nx + dirx) * k; j.vz = (j.vz || 0) * 0.3 + (nz + dirz) * k; j.wy = rand(-8, 8) * (j.kind === 'cup' ? 1 : 0.3);
+    if (j.kind === 'cup') { j.up = false; if (was < 0.4) SFX.sample('cupHit', Math.min(0.75, 0.22 + spd * 0.09), rand(0.9, 1.15), 0.045); }
+    else if (was < 0.3) rustle(1);
   }
 }
 // Mop collection: pull papers & shards in a radius toward a point, then collect
@@ -404,8 +441,11 @@ export function litterCount() {
   return n;
 }
 function updatePapers(dt) {
-  let k = 0;
+  let k = 0, air = 0;
   const vacOff = !(G.time - (FX.vacT ?? -9) < 0.1);
+  for (const p of papers) if (!p.rest && p.karim) air++; // (only sheets he sent flying flutter audibly)
+  // sheets in the air flutter (only while playing: menus and the elevator stay quiet)
+  if (G.state === 'play' || G.state === 'cleared') SFX.loop('paperFlutter', Math.min(1, air / 14) * 0.42, 0.9 + Math.min(air, 30) * 0.008);
   for (const p of papers) {
     if (vacOff && p.suck) { p.suck = 0; if (p.rest) { p.y = p.floorY + 0.004; p.pitch = p.roll = 0; } } // vacuum off: drop back down
     if (!p.rest) {
@@ -428,7 +468,7 @@ function updatePapers(dt) {
       if (p.z > b.maxZ - 0.1) { p.z = b.maxZ - 0.1; p.vz = -Math.abs(p.vz) * 0.3; }
       const fy = surfaceHeight(p.x, p.z);
       if (p.y <= fy + 0.004 && p.vy < 0) {
-        p.y = fy + 0.003 + Math.random() * 0.006; p.rest = true; p.floorY = fy; p.pitch = 0; p.roll = 0;
+        p.y = fy + 0.003 + Math.random() * 0.006; p.rest = true; p.karim = false; p.floorY = fy; p.pitch = 0; p.roll = 0;
       }
     }
     _e.set(p.pitch, p.yaw, p.roll, 'YXZ'); _q.setFromEuler(_e);
@@ -466,10 +506,20 @@ export function spawnJunk(kind, x, z, o = {}) {
   junk.push({ kind, x, z, y: o.y || 0.002, floorY: o.y || 0, yaw: o.yaw ?? Math.random() * 6.283, up: !!o.up, rest: true, col });
 }
 export function junkCount() { let n = 0; for (const j of junk) if (j.floorY < 0.1) n++; return n; }
-function updateJunk() {
+function updateJunk(dt) {
   if (!JM.cup) return;
-  const vacOff = !(G.time - (FX.vacT ?? -9) < 0.1), n = { cup: 0, folder: 0 };
+  const vacOff = !(G.time - (FX.vacT ?? -9) < 0.1), n = { cup: 0, folder: 0 }, B0 = G.bounds;
   for (const j of junk) {
+    if ((j.vx || j.vz) && dt > 0 && !j.suck) { // skidding / rolling after a kick
+      const nx = j.x + j.vx * dt, nz = j.z + j.vz * dt, sp = Math.hypot(j.vx, j.vz);
+      if (nx < B0.minX + 0.1 || nx > B0.maxX - 0.1 || nz < B0.minZ + 0.1 || nz > B0.maxZ - 0.1 || G.colliders.some(b => b.active && b.y0 < 0.2 && b.y1 > 0.05 && pointInBox(b, nx, nz, 0.04))) {
+        j.vx *= -0.35; j.vz *= -0.35; // bounce off the furniture
+        if (j.kind === 'cup' && sp > 0.7) SFX.sample('cupHit', Math.min(0.5, sp * 0.15), rand(1, 1.2), 0.06);
+      } else { j.x = nx; j.z = nz; }
+      j.yaw += (j.wy || 0) * dt;
+      const f = Math.exp(-(j.kind === 'cup' ? 2.4 : 6) * dt); j.vx *= f; j.vz *= f; if (j.wy) j.wy *= f;
+      if (sp < 0.04) j.vx = j.vz = 0;
+    }
     if (vacOff && j.suck) { j.suck = 0; j.y = j.floorY + 0.002; }
     const mesh = JM[j.kind], i = n[j.kind]++;
     if (j.kind === 'cup' && !j.up) _e.set(Math.PI / 2 + (j.suck ? Math.sin(j.ph || 0) * 0.5 * j.suck : 0), j.yaw, 0, 'YXZ'); // (on its side)
@@ -583,7 +633,9 @@ function updateShards(dt) {
     if (vacOff && s.suck) { s.suck = 0; if (s.rest) s.y = (s.fy || 0) + 0.005; }
     if (!s.rest) {
       s.vy -= 14 * dt;
+      const px = s.x, pz = s.z;
       s.x += s.vx * dt; s.y += s.vy * dt; s.z += s.vz * dt;
+      keepIn(s, px, pz);
       const sp = s.w.length();
       if (sp > 0) { _axis.copy(s.w).multiplyScalar(1 / sp); _w.setFromAxisAngle(_axis, sp * dt); s.q.premultiply(_w); }
       const fy = surfaceHeight(s.x, s.z);
@@ -670,7 +722,7 @@ function updateParticles(dt) {
   for (let i = debris.length - 1; i >= 0; i--) {
     const p = debris[i]; p.t += dt;
     if (p.t > p.life) { debris.splice(i, 1); continue; }
-    p.vy -= 9.8 * dt; p.x += p.vx * dt; p.y += p.vy * dt; p.z += p.vz * dt; p.spin += dt * 8;
+    { const px = p.x, pz = p.z; p.vy -= 9.8 * dt; p.x += p.vx * dt; p.y += p.vy * dt; p.z += p.vz * dt; p.spin += dt * 8; keepIn(p, px, pz); }
     if (p.y < 0.01) { p.y = 0.01; p.vy = 0; p.vx *= 0.8; p.vz *= 0.8; }
   }
   for (const p of debris) {
@@ -755,7 +807,7 @@ function updateFloats(dt) {
 }
 
 export function updateFX(dt) {
-  updatePapers(dt); updateLeaves(); updateJunk(); updateShards(dt); updateParticles(dt); updateTracers(dt); updateFloats(dt); updateDirt(dt);
+  updatePapers(dt); updateLeaves(); updateJunk(dt); updateShards(dt); updateParticles(dt); updateTracers(dt); updateFloats(dt); updateDirt(dt);
 }
 
 // where there's still something for this tool to clean (world x, z), for the minimap: litter for the vacuum;

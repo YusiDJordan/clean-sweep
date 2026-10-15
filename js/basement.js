@@ -232,15 +232,17 @@ export function buildBasement() {
 
   // ---- the corridor Karim came in from (behind the open west door) ----
   const cor = new THREE.MeshStandardMaterial({ color: 0x8d8a83, roughness: 0.8 });
-  box(3.0, 0.05, 2.9, cor, B0.minX - T - 1.5, -0.025, (door.z0 + door.z1) / 2, { cast: false });
-  box(3.0, WALL_H, 0.2, M.wall, B0.minX - T - 1.5, H2, door.z0 - 0.35); box(3.0, WALL_H, 0.2, M.wall, B0.minX - T - 1.5, H2, door.z1 + 0.35);
-  box(0.2, WALL_H, 2.9, M.wall, B0.minX - T - 3.0, H2, (door.z0 + door.z1) / 2);
-  { // the door itself, swung back into the corridor
-    const g = new THREE.Group(); g.position.set(B0.minX - T + 0.02, 0, door.z1 - 0.02); g.rotation.y = 1.75; G.scene.add(g);
+  // (its side walls run straight on from the doorway's edges, so the room wall never seems to cut across them)
+  const CW = door.z1 - door.z0 + 0.4; // corridor width, walls included
+  box(3.0, 0.05, CW, cor, B0.minX - T - 1.5, -0.025, (door.z0 + door.z1) / 2, { cast: false });
+  box(3.0, WALL_H, 0.2, M.wall, B0.minX - T - 1.5, H2, door.z0 - 0.1); box(3.0, WALL_H, 0.2, M.wall, B0.minX - T - 1.5, H2, door.z1 + 0.1);
+  box(0.2, WALL_H, CW, M.wall, B0.minX - T - 3.0 - 0.1, H2, (door.z0 + door.z1) / 2);
+  { // the door itself, swung right back flat against the corridor wall
+    const g = new THREE.Group(); g.position.set(B0.minX - T - 0.01, 0, door.z1 - 0.035); g.rotation.y = Math.PI / 2; G.scene.add(g);
     box(0.05, 2.12, 1.14, M.door, 0, 1.06, -0.58, { parent: g }); box(0.07, 0.04, 0.5, M.metal, 0.03, 1.02, -0.85, { parent: g });
     box(0.06, 0.25, 1.1, M.dark, 0, 0.15, -0.58, { parent: g });
   }
-  for (const [w, h, d, x, y, z] of [[T + 0.06, 0.08, 1.28, B0.minX - T / 2, 2.2, (door.z0 + door.z1) / 2], [T + 0.06, 2.2, 0.06, B0.minX - T / 2, 1.1, door.z0 - 0.03], [T + 0.06, 2.2, 0.06, B0.minX - T / 2, 1.1, door.z1 + 0.03]]) box(w, h, d, M.dark, x, y, z);
+  for (const [w, h, d, x, y, z] of [[T + 0.06, 0.1, 1.28, B0.minX - T / 2, 2.19, (door.z0 + door.z1) / 2], [T + 0.06, 2.2, 0.08, B0.minX - T / 2, 1.1, door.z0 - 0.02], [T + 0.06, 2.2, 0.08, B0.minX - T / 2, 1.1, door.z1 + 0.02]] /* (the jambs stand 2 cm proud of the wall's edge: flush, they z-fought with it) */) box(w, h, d, M.dark, x, y, z);
 
   // ---- the stairwell behind the fire doors (where the robber waits, and the way up to the lobby) ----
   const sw0 = dz.x0 - 0.1, sw1 = dz.x1 + 0.1, sz0 = B0.minZ - T, sz1 = B0.minZ - 4.4;

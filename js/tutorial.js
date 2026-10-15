@@ -63,9 +63,9 @@ const STEPS = [
     enter(s) { s.r0 = Math.max(0.001, hallDull()); s.p = 0; s.pt = 0; },
     update(s, dt) { s.pt -= dt; if (s.pt <= 0) { s.pt = 0.25; s.p = Math.max(s.p, 1 - hallDull() / s.r0); } },
     progress: s => s.p / 0.75, done: s => s.p >= 0.75 },
-  { id: 'intruder', allow: [], keys: [], target: robberHead, focus: () => ({ x: BS.doors.cx - 1.5, z: BS.bounds.minZ + 1.5, w: 0.5 }),
-    text: () => `Lovely. But someone's coming down from the lobby…`,
-    enter(s) { const e = TUT.robber; shineHall(); openFireDoors(); e.hidden = false; e.tutHold = false; e.tutNoAttack = true; e.tutIdeal = 4.5; e.alert(0.4); e.tutWalk = V(BS.doors.cx - 1.2, 0, -2.6); SFX.play('alert');
+  { id: 'intruder', allow: [], keys: [], target: robberHead, focus: () => ({ x: (TUT.robber.pos.x + P().pos.x) / 2, z: (TUT.robber.pos.z + P().pos.z) / 2, w: 0.6 }),
+    text: () => `Lovely. But someone's followed you in…`,
+    enter(s) { const e = TUT.robber; shineHall(); e.pos.set(BS.start.x, 0, BS.start.z); e.vel && e.vel.set(0, 0, 0); e.yaw = Math.PI / 2; e.hidden = false; e.tutHold = false; e.tutNoAttack = true; e.tutIdeal = 4.5; e.alert(0.4); e.tutWalk = null; SFX.play('alert'); // (in the way Karim came, at the bottom left: the fire doors stay shut until he's in the barrow)
       // Karim backs away into the middle of the hall, eyes on him (so the fight happens where we can see it)
       s.said = false; G.autoWalk = V(BS.hall.c.x - 0.6, 0, BS.hall.c.z + 0.6); G.autoFace = e.pos; G.cine = true; },
     update(s) {
@@ -73,22 +73,21 @@ const STEPS = [
       if (!s.said && TUT.t > 0.9) { s.said = true; HUD.say(e, 'Hey, what are you doing here?!', 2.6); }
       if (G.autoWalk && P().pos.distanceTo(G.autoWalk) < 0.3) G.autoWalk = null;
     },
-    done: (s, t) => t > 3.0 && (!G.autoWalk || t > 6),
+    done: (s, t) => t > 3.0 && (!G.autoWalk || t > 6) && (TUT.robber.pos.distanceTo(P().pos) < 7.5 || t > 9),
     leave() { G.autoWalk = null; G.autoFace = null; G.cine = false; } },
   { id: 'mopback', allow: [], keys: [K.tools], target: () => P().pos.clone().setY(1.05), skip: () => P().tool === 'mop',
     text: () => `A robber! You fight with the <b class="g">mop</b>. Press <kbd>1</kbd> to switch to it.`, done: () => P().tool === 'mop' },
   { id: 'strike', allow: ['attack'], keys: [K.strike], target: robberHead,
     text: () => `<kbd>Left click</kbd> (or <kbd>J</kbd>) swings the mop: Karim lunges at the robber. Hit him <b class="g">3 times</b>, and keep the hits coming for a combo.`,
     enter(s) { s.h0 = G.stats.hits; TUT.robber.tutIdeal = 2.4; s.shut = false; },
-    update(s) { if (!s.shut && TUT.robber.pos.z > BS.bounds.minZ + 1.6) { s.shut = true; closeFireDoors(); } }, // (the door swings shut behind him)
     progress: s => (G.stats.hits - s.h0) / 3, done: s => G.stats.hits - s.h0 >= 3 },
   { id: 'dodge', allow: ['dodge'], keys: [K.dodge], target: robberHead,
     text: s => (s.miss ? `<b class="r">Too ${s.miss}.</b> ` : '') + `He's taking aim! When the <b class="r">red laser</b> lands on you, press <kbd>Space</kbd> to roll out of the way.`,
-    enter(s) { const e = TUT.robber; e.tutIdeal = 4.8; s.next = 1.4; s.ok = false; s.miss = null; s.aiming = false; s.lb = e.lastBurst; closeFireDoors(); },
+    enter(s) { const e = TUT.robber; e.tutIdeal = 4.8; s.next = 0.5; s.ok = false; s.miss = null; s.aiming = false; s.lb = e.lastBurst; closeFireDoors(); },
     update(s, dt) {
       const e = TUT.robber, d = e.pos.distanceTo(P().pos); s.next -= dt;
       // he backs off a little, then raises the rifle (sooner or later, even if Karim stays close)
-      if (s.next <= 0 && e.state === 'combat' && !e.down && (d > 3.2 || s.next < -3)) { if (e.forceAim()) { s.next = 1e9; s.aiming = true; } }
+      if (s.next <= 0 && e.state === 'combat' && !e.down && (d > 2.6 || s.next < -0.8)) { if (e.forceAim()) { s.next = 1e9; s.aiming = true; } }
       if (s.aiming && (e.down || e.state === 'stagger')) { // knocked out of his aim: rolling into him counts too
         s.aiming = false;
         if (e.burstDodged || P().state === 'dodge') s.ok = true; else s.next = 1.5;
@@ -96,7 +95,7 @@ const STEPS = [
       if (e.lastBurst && e.lastBurst !== s.lb) { // a burst just finished
         s.lb = e.lastBurst; s.aiming = false;
         if (e.lastBurst.dodged) s.ok = true;
-        else { s.miss = e.lastBurst.hurt ? 'slow' : 'early'; s.next = 1.6; P().hp = Math.max(P().hp, 1); }
+        else { s.miss = e.lastBurst.hurt ? 'slow' : 'early'; s.next = 0.9; P().hp = Math.max(P().hp, 1); }
       }
     }, done: s => s.ok },
   { id: 'kick', allow: ['sweep'], keys: [K.kick], target: robberHead,

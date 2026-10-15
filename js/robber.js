@@ -15,6 +15,7 @@ const jointOf = (rig, j) => ({ body: rig.body, spine: rig.spine, chest: rig.ches
   hip0: rig.hip[0], knee0: rig.knee[0], foot0: rig.foot[0], hip1: rig.hip[1], knee1: rig.knee[1], foot1: rig.foot[1] })[j];
 
 export function robberDims() { return R ? R.D : null; }
+export const robberKit = () => R; // (the rifle and its grips, for the boss)
 
 export function prepareRobber(gltf, RigClass) {
   if (R) return R;

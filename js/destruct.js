@@ -343,12 +343,19 @@ export function pushChairs(pos, r, vel, strength = 1) {
       const v = Math.hypot(vel.x, vel.z), k = (c.heavy ? 0.25 : c.light ? 0.8 : 0.5) / c.mass;
       c.vel.x += dx / d * v * k * strength; c.vel.z += dz / d * v * k * strength; c.wy += (Math.random() - 0.5) * v * (c.heavy ? 0.4 : c.light ? 3 : 2);
       if (c.light && !c.noTip && v * strength > 4.5) knockChair(c, new THREE.Vector3(dx / d, 0, dz / d), v * strength); // run or slide into a bin and over it goes
+      else if (c.spill && v * strength > 1.6) binClang(c, Math.min(0.55, v * strength * 0.1)); // walking into a bin: a tinny bump
     }
   }
 }
+// a metal bin rings when something hits it (not more than a few times a second)
+function binClang(c, vol) {
+  const t = G.time; if (c.clangT && t - c.clangT < 0.22) return; c.clangT = t;
+  SFX.sample('binClang', Math.min(1, vol * 1.19), rand(0.94, 1.06), 0.05); // (+1.5 dB)
+}
 export function knockChair(c, dir, force) {
+  if (c.spill && force > 1) binClang(c, Math.min(0.9, 0.3 + force * 0.09));
   const k = (c.heavy ? 0.45 : 1) / c.mass;
-  c.vel.x += dir.x * force * k; c.vel.z += dir.z * force * k; c.wy += rand(-8, 8) * k;
+  c.vel.x += dir.x * force * k * 0.55; c.vel.z += dir.z * force * k * 0.55; c.wy += rand(-8, 8) * k * 0.6; // (they skid about half as far as they used to)
   if (force > c.tipForce && !c.tipped && !c.noTip) {
     c.tipped = true; c.tipDir.copy(dir);
     if (c.cost) {
@@ -370,14 +377,18 @@ function updateChairs(dt) {
     for (const sh of c.shadows) sh.visible = false;
     if (k >= 1) { c.obj.parent && c.obj.parent.remove(c.obj); chairs.splice(i, 1); }
   }
+  let roll = 0;
   for (const c of chairs) {
     if (c.sucked) continue;
+    // casters rolling (chairs, the cart, the trolley): how far it actually went since the last frame, pushes included
+    if (dt > 0 && !c.light && !c.rifle && !c.baseQ && !c.tipped && c.lastX !== undefined) { const v = Math.hypot(c.pos.x - c.lastX, c.pos.z - c.lastZ) / dt; if (v > 0.25) roll += Math.min(v, 5) * (c.heavy ? 1.3 : 1); }
     c.pos.x += c.vel.x * dt; c.pos.z += c.vel.z * dt; c.yaw += c.wy * dt;
     const f = Math.exp(-(c.heavy ? 2.2 * c.mass : c.light ? 2.6 : 3.5) * dt); c.vel.multiplyScalar(f); c.wy *= f;
     const p = { x: c.pos.x, y: 0, z: c.pos.z };
     const hit = resolveCircle(p, c.r, b => !b.desk);
     resolveCircle(p, c.r, null, getDeskInner());
     if (hit && hit.destructible && Math.hypot(c.vel.x, c.vel.z) > 4) hitDestructible(hit.destructible, 'body', new THREE.Vector3(p.x, 0.8, p.z), c.vel.clone().normalize());
+    if (hit && c.spill && Math.hypot(c.vel.x, c.vel.z) > 1.8) binClang(c, Math.min(0.8, Math.hypot(c.vel.x, c.vel.z) * 0.12)); // a bin skidding into a wall
     c.pos.x = p.x; c.pos.z = p.z;
     // chairs vs other chairs
     for (const o of chairs) if (o !== c) {
@@ -399,5 +410,8 @@ function updateChairs(dt) {
       c.obj.traverse(m => { if (m.isMesh && !m.userData.contact) { if (!m.geometry.boundingBox) m.geometry.computeBoundingBox(); _bb2.copy(m.geometry.boundingBox).applyMatrix4(m.matrixWorld); _bb.union(_bb2); } });
       if (_bb.min.y < 0.004) c.obj.position.y += 0.004 - _bb.min.y;
     }
+    c.lastX = c.pos.x; c.lastZ = c.pos.z;
   }
+  G.rollV = (G.rollV || 0) + (roll - (G.rollV || 0)) * Math.min(1, dt * 8); // (smoothed: no flicker from frame to frame)
+  SFX.loop('rollChair', Math.min(1, G.rollV / 2.4) * 0.5, 0.7 + Math.min(G.rollV, 5) * 0.11);
 }

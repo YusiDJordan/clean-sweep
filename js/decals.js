@@ -2,7 +2,7 @@
 // Painted procedurally into one high-res atlas and laid on the floor as a single instanced mesh.
 // The mop wipes them through a shared floor-sized mask (white = still dirty).
 import * as THREE from 'three';
-import { G, makeCanvas, pointInBox } from './state.js';
+import { G, makeCanvas, pointInBox, markRect, uploadRect } from './state.js';
 
 const N = 4, CELL = 512, AT = N * CELL, MAXD = 320;
 const MPX = 20; // wipe-mask pixels per metre
@@ -351,7 +351,7 @@ export function addDecal(type, x, z, size, yaw = Math.random() * 6.2832, opacity
   // a fresh decal is fully dirty, even where the floor was cleaned before (only its own tool's channel)
   const [px, py] = toMask(x, z); const mx = DECALS.mctx;
   mx.save(); mx.globalCompositeOperation = 'lighten'; mx.fillStyle = `rgb(${CHS[kind]})`; mx.beginPath(); mx.arc(px, py, d.rad * MPX * 0.95, 0, 6.2832); mx.fill(); mx.restore();
-  DECALS.maskDirty = true;
+  { const rr = d.rad * MPX + 2; markRect(DECALS, 'maskRect', px - rr, py - rr, px + rr, py + rr); }
   return d;
 }
 // take decals away for good (hidden, and no longer counted)
@@ -370,7 +370,7 @@ export function wipeDecals(x, z, r, strength, kind = 0) {
   const g = mx.createRadialGradient(px, py, 0, px, py, rr);
   g.addColorStop(0, `rgba(${CH[kind]},${a})`); g.addColorStop(0.7, `rgba(${CH[kind]},${a * 0.7})`); g.addColorStop(1, `rgba(${CH[kind]},0)`);
   mx.save(); mx.globalCompositeOperation = 'multiply'; mx.fillStyle = g; mx.beginPath(); mx.arc(px, py, rr, 0, 6.2832); mx.fill(); mx.restore();
-  DECALS.maskDirty = true;
+  markRect(DECALS, 'maskRect', px - rr - 1, py - rr - 1, px + rr + 1, py + rr + 1);
 }
 // the polisher buffs dull floor back to a shine (and takes scratches out)
 export function polishAt(x, z, r, strength) {
@@ -384,7 +384,7 @@ export function polishAt(x, z, r, strength) {
   const g = rx.createRadialGradient(px, py, 0, px, py, rr);
   g.addColorStop(0, `rgba(0,0,0,${a})`); g.addColorStop(0.7, `rgba(0,0,0,${a * 0.7})`); g.addColorStop(1, 'rgba(0,0,0,0)');
   rx.fillStyle = g; rx.beginPath(); rx.arc(px, py, rr, 0, 6.2832); rx.fill();
-  DECALS.roughDirty = true;
+  markRect(DECALS, 'roughRect', px - rr - 1, py - rr - 1, px + rr + 1, py + rr + 1);
 }
 export function dullToPolish(x, z, r) {
   if (!DECALS.rctx) return false;
@@ -406,10 +406,12 @@ export function roughLeft() {
 let upT = 0;
 export function updateDecals(dt) {
   upT -= dt;
-  if ((DECALS.maskDirty || DECALS.roughDirty) && upT <= 0) {
+  if ((DECALS.maskDirty || DECALS.roughDirty || DECALS.maskRect || DECALS.roughRect) && upT <= 0) {
     if (DECALS.maskDirty) DECALS.maskTex.needsUpdate = true;
+    else if (DECALS.maskRect && !uploadRect(DECALS.maskTex, DECALS.mctx, DECALS.maskRect)) DECALS.maskTex.needsUpdate = true;
     if (DECALS.roughDirty) DECALS.roughTex.needsUpdate = true;
-    DECALS.maskDirty = DECALS.roughDirty = false; upT = 0.05;
+    else if (DECALS.roughRect && !uploadRect(DECALS.roughTex, DECALS.rctx, DECALS.roughRect)) DECALS.roughTex.needsUpdate = true;
+    DECALS.maskDirty = DECALS.roughDirty = false; DECALS.maskRect = DECALS.roughRect = null; upT = 0.03;
   }
 }
 // how much decal grime is left, in the same units as the dirt layer (fraction of the floor area)
@@ -529,5 +531,5 @@ export function fadeDull(r, a) {
   if (!DECALS.rctx) return;
   const [x0, y0] = toMask(r.x0, r.z0), [x1, y1] = toMask(r.x1, r.z1);
   const rx = DECALS.rctx; rx.fillStyle = `rgba(0,0,0,${Math.min(1, a)})`; rx.fillRect(x0, y0, x1 - x0, y1 - y0);
-  DECALS.roughDirty = true;
+  markRect(DECALS, 'roughRect', x0 - 1, y0 - 1, x1 + 1, y1 + 1);
 }

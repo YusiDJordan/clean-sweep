@@ -76,6 +76,12 @@ export function pointInBox(b, x, z, pad = 0) {
   return Math.abs(lx) <= b.hx + pad && Math.abs(lz) <= b.hz + pad;
 }
 // 3D ray vs yaw-rotated box. Returns t or -1
+// can a's arm (or mop, or rifle butt) reach b? walls, glass, cabinets: anything waist-high or taller in between says no
+export function canReach(a, b) {
+  const o = { x: a.x, y: 1.0, z: a.z }, d = { x: b.x - a.x, y: 0, z: b.z - a.z }, L = Math.hypot(d.x, d.z); if (L < 1e-4) return true; d.x /= L; d.z /= L;
+  for (const c of G.colliders) { if (!c.active || c.y1 < 0.85) continue; const t = rayBox(c, o, d, L); if (t > 0 && t < L) return false; }
+  return true;
+}
 export function rayBox(b, o, d, maxT) {
   const [ox, oz] = toLocal(b, o.x, o.z);
   const dx = d.x * b.c - d.z * b.s, dz = d.x * b.s + d.z * b.c;
@@ -109,3 +115,25 @@ export function canvasTex(cv, srgb = true, repeat = false) {
   return t;
 }
 export function makeCanvas(w, h) { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; }
+
+// ---- partial texture uploads: a mop stroke changes a hand-sized patch of a floor-sized canvas; send just that patch
+// to the GPU (re-sending the whole 1360x960 layer twenty times a second was what made mopping choppy) ----
+export function markRect(o, key, x0, y0, x1, y1) { // grow a pending dirty rectangle (canvas pixels)
+  const r = o[key]; if (!r) o[key] = [x0, y0, x1, y1]; else { if (x0 < r[0]) r[0] = x0; if (y0 < r[1]) r[1] = y0; if (x1 > r[2]) r[2] = x1; if (y1 > r[3]) r[3] = y1; }
+}
+export function uploadRect(tex, ctx, r) { // false: not on the GPU yet (do a full upload instead)
+  const R = G.renderer; if (!R) return false;
+  const p = R.properties.get(tex);
+  if (!p.__webglTexture || p.__version !== tex.version) return false;
+  const cv = ctx.canvas, x = Math.max(0, Math.floor(r[0])), y = Math.max(0, Math.floor(r[1]));
+  const w = Math.min(cv.width, Math.ceil(r[2])) - x, h = Math.min(cv.height, Math.ceil(r[3])) - y;
+  if (w <= 0 || h <= 0) return true;
+  const gl = R.getContext(), img = ctx.getImageData(x, y, w, h);
+  R.state.bindTexture(gl.TEXTURE_2D, p.__webglTexture);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false); gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, !!tex.premultiplyAlpha);
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4); gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);
+  if (gl.UNPACK_ROW_LENGTH) { gl.pixelStorei(gl.UNPACK_ROW_LENGTH, 0); gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, 0); gl.pixelStorei(gl.UNPACK_SKIP_ROWS, 0); }
+  gl.texSubImage2D(gl.TEXTURE_2D, 0, x, y, w, h, gl.RGBA, gl.UNSIGNED_BYTE, img);
+  if (tex.generateMipmaps && tex.minFilter !== 1006 && tex.minFilter !== 1003) gl.generateMipmap(gl.TEXTURE_2D); // (Linear / Nearest: no mips)
+  return true;
+}
